@@ -1,32 +1,28 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import random
 import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QListWidget, QLabel, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem, QMessageBox,
-    QSizePolicy, QSplitter, QTextEdit, QListWidgetItem, QGraphicsItem
+    QSizePolicy, QSplitter, QTextEdit, QListWidgetItem, QGraphicsItem,
+    QLineEdit
 )
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QAction
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QDoubleValidator, QIntValidator
 from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSizeF
-
 from PIL import Image
-import pandas as pd
-import traceback # Para imprimir exceções detalhadas
-
-Image.MAX_IMAGE_PIXELS = None
+import traceback
 
 # --- Configuration ---
-# Medidas em PIXELS na imagem ORIGINAL de alta resolução
-TARGET_RECT_WIDTH_ORIGINAL = 5676 
-TARGET_RECT_HEIGHT_ORIGINAL = 1892 
+TARGET_RECT_WIDTH_ORIGINAL = 5676
+TARGET_RECT_HEIGHT_ORIGINAL = 1892
+TILE_COLS = 6
+TILE_ROWS = 2
 # --- End Configuration ---
 
-
-# --- Custom QGraphicsRectItem to constrain movement ---
 class ConstrainedRectItem(QGraphicsRectItem):
-    """ Um QGraphicsRectItem que só pode ser movido dentro de limites definidos. """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setFlags(
@@ -37,316 +33,546 @@ class ConstrainedRectItem(QGraphicsRectItem):
         self.boundary_rect = QRectF()
 
     def setBoundary(self, rect: QRectF):
-        """Define o retângulo (em coordenadas da cena) dentro do qual este item pode se mover."""
         self.boundary_rect = rect
 
     def itemChange(self, change, value):
-        """Chamado quando o item muda, usado para restringir a posição."""
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
-            new_pos = value # A nova posição proposta (QPointF)
-            rect = self.rect() # A geometria do próprio retângulo (largura, altura)
-            if not self.boundary_rect.isValid(): return new_pos
-            rect_width = max(0.0, rect.width()); rect_height = max(0.0, rect.height())
-            min_x = self.boundary_rect.left(); max_x = self.boundary_rect.right() - rect_width
-            min_y = self.boundary_rect.top(); max_y = self.boundary_rect.bottom() - rect_height
-            clamped_x = max(min_x, min(new_pos.x(), max_x))
-            clamped_y = max(min_y, min(new_pos.y(), max_y))
-            return QPointF(clamped_x, clamped_y)
+            new_pos = value
+            rect = self.rect()
+            if not self.boundary_rect.isValid():
+                return new_pos
+            w, h = rect.width(), rect.height()
+            min_x = self.boundary_rect.left()
+            max_x = self.boundary_rect.right() - w
+            min_y = self.boundary_rect.top()
+            max_y = self.boundary_rect.bottom() - h
+            x = max(min_x, min(new_pos.x(), max_x))
+            y = max(min_y, min(new_pos.y(), max_y))
+            return QPointF(x, y)
         return super().itemChange(change, value)
 
     def hoverEnterEvent(self, event):
-        """Muda o cursor ao passar o mouse sobre."""
         QApplication.instance().setOverrideCursor(Qt.CursorShape.SizeAllCursor)
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
-        """Restaura o cursor ao tirar o mouse de cima."""
         QApplication.instance().restoreOverrideCursor()
         super().hoverLeaveEvent(event)
 
-# --- Modified Graphics View ---
 class PlacementView(QGraphicsView):
-    """ Visualização gráfica para exibir a imagem e o retângulo móvel."""
     def __init__(self, parent=None):
-        super().__init__(parent); self._scene = QGraphicsScene(self); self.setScene(self._scene)
-        self.pixmap_item = None; self.rect_item = None; self.current_scale_factor = 1.0
-        self.original_image_size = QSize(); self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag) # Permite arrastar a imagem
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.pixmap_item = None
+        self.rect_item = None
+        self.current_scale_factor = 1.0
+        self.original_image_size = QSize()
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
     def set_image(self, pixmap_original: QPixmap):
-        """Define a imagem a ser exibida e cria o retângulo inicial."""
         try:
-            self._scene.clear(); self.rect_item = None; self.pixmap_item = None
-            if pixmap_original.isNull(): print("PlacementView.set_image: Warning - Received null pixmap."); return
+            self._scene.clear()
+            self.rect_item = None
+            self.pixmap_item = None
+            if pixmap_original.isNull():
+                return
             self.original_image_size = pixmap_original.size()
             view_rect = self.viewport().rect()
-            if view_rect.width() <= 0 or view_rect.height() <= 0: view_rect.setSize(QSize(400, 300))
+            if view_rect.width() <= 0 or view_rect.height() <= 0:
+                view_rect.setSize(QSize(400, 300))
             img_rect = QRectF(QPointF(0, 0), QSizeF(pixmap_original.size()))
-            if img_rect.isEmpty() or img_rect.width() <= 0 or img_rect.height() <= 0 :
-                 self.current_scale_factor = 1.0; scaled_pixmap = pixmap_original
-            else:
-                scale_x = view_rect.width() / img_rect.width(); scale_y = view_rect.height() / img_rect.height()
-                self.current_scale_factor = max(0.001, min(scale_x, scale_y, 1.0))
-                scaled_width = max(1, int(img_rect.width() * self.current_scale_factor))
-                scaled_height = max(1, int(img_rect.height() * self.current_scale_factor))
-                scaled_pixmap = pixmap_original.scaled(scaled_width, scaled_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.pixmap_item = QGraphicsPixmapItem(scaled_pixmap); self._scene.addItem(self.pixmap_item)
-            scene_rect = self.pixmap_item.boundingRect(); self.setSceneRect(scene_rect)
-            if scene_rect.isValid(): self.create_initial_rectangle(scene_rect)
-            else: print("PlacementView.set_image: Error - Invalid boundary rect.")
-        except Exception as e: print(f"PlacementView.set_image: EXCEPTION: {e}"); traceback.print_exc()
-                
-    def create_initial_rectangle(self, boundary: QRectF):
-         """Cria o retângulo delimitador inicial (ConstrainedRectItem)."""
-         if self.rect_item: self._scene.removeItem(self.rect_item)
-         self.rect_item = None
-         if self.current_scale_factor <= 0: return
-         scaled_width = TARGET_RECT_WIDTH_ORIGINAL * self.current_scale_factor
-         scaled_height = TARGET_RECT_HEIGHT_ORIGINAL * self.current_scale_factor
-         scaled_width = max(1.0, scaled_width); scaled_height = max(1.0, scaled_height)
-         self.rect_item = ConstrainedRectItem(0, 0, scaled_width, scaled_height) # <<< Usando ConstrainedRectItem
-         self.rect_item.setBoundary(boundary)
-         pen = QPen(QColor("red"), 1); pen.setCosmetic(True)
-         self.rect_item.setPen(pen); self.rect_item.setZValue(1)
-         self._scene.addItem(self.rect_item)
-         self.rect_item.setPos(boundary.left(), boundary.top()) # Posiciona no topo-esquerdo
+            scale_x = view_rect.width() / img_rect.width()
+            scale_y = view_rect.height() / img_rect.height()
+            factor = max(0.001, min(scale_x, scale_y, 1.0))
+            sw = max(1, int(img_rect.width() * factor))
+            sh = max(1, int(img_rect.height() * factor))
+            scaled = pixmap_original.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.current_scale_factor = factor
+            self.pixmap_item = QGraphicsPixmapItem(scaled)
+            self._scene.addItem(self.pixmap_item)
+            scene_rect = self.pixmap_item.boundingRect()
+            self.setSceneRect(scene_rect)
+            self.create_initial_rectangle(scene_rect)
+        except Exception as e:
+            print(f"PlacementView.set_image error: {e}")
+            traceback.print_exc()
 
-    def show_existing_roi(self, roi_original: tuple):
-        """Cria e posiciona o retângulo com base em coordenadas originais salvas."""
-        if not self.pixmap_item or not roi_original or self.current_scale_factor <= 0: return
-        try:
-            ox, oy, ow, oh = roi_original
-            scaled_x = ox * self.current_scale_factor; scaled_y = oy * self.current_scale_factor
-            scaled_w = ow * self.current_scale_factor; scaled_h = oh * self.current_scale_factor
-            scaled_w = max(1.0, scaled_w); scaled_h = max(1.0, scaled_h)
-            boundary = self.pixmap_item.boundingRect()
-            if not boundary.isValid(): return
-            if self.rect_item: self._scene.removeItem(self.rect_item)
-            self.rect_item = ConstrainedRectItem(0, 0, scaled_w, scaled_h) # <<< Usando ConstrainedRectItem
-            self.rect_item.setBoundary(boundary)
-            pen = QPen(QColor("blue"), 1); pen.setCosmetic(True) # Azul para ROI salvo
-            self.rect_item.setPen(pen); self.rect_item.setZValue(1)
-            self._scene.addItem(self.rect_item)
-            clamped_x = max(boundary.left(), min(scaled_x, boundary.right() - scaled_w))
-            clamped_y = max(boundary.top(), min(scaled_y, boundary.bottom() - scaled_h))
-            self.rect_item.setPos(clamped_x, clamped_y)
-        except Exception as e: print(f"PlacementView.show_existing_roi: EXCEPTION: {e}"); traceback.print_exc()
+    def create_initial_rectangle(self, boundary: QRectF):
+        if self.rect_item:
+            self._scene.removeItem(self.rect_item)
+        w = TARGET_RECT_WIDTH_ORIGINAL * self.current_scale_factor
+        h = TARGET_RECT_HEIGHT_ORIGINAL * self.current_scale_factor
+        w, h = max(1.0, w), max(1.0, h)
+        self.rect_item = ConstrainedRectItem(0, 0, w, h)
+        self.rect_item.setBoundary(boundary)
+        pen = QPen(QColor("red"), 1)
+        pen.setCosmetic(True)
+        self.rect_item.setPen(pen)
+        self.rect_item.setZValue(1)
+        self._scene.addItem(self.rect_item)
+        self.rect_item.setPos(boundary.left(), boundary.top())
 
     def get_roi_original_coords(self) -> tuple | None:
-        """Obtém as coordenadas (x, y, w, h) do retângulo na escala da imagem original."""
-        if self.rect_item and self.pixmap_item and self.current_scale_factor > 0 and self.original_image_size.isValid():
-            try:
-                scaled_top_left = self.rect_item.scenePos()
-                original_x = scaled_top_left.x() / self.current_scale_factor
-                original_y = scaled_top_left.y() / self.current_scale_factor
-                width = TARGET_RECT_WIDTH_ORIGINAL; height = TARGET_RECT_HEIGHT_ORIGINAL
-                if width <= 0 or height <= 0: print("PlacementView.get_roi_original_coords: Error - Target dimensions invalid."); return None
-                max_x = self.original_image_size.width() - width; max_y = self.original_image_size.height() - height
-                original_x = max(0.0, min(original_x, max_x)); original_y = max(0.0, min(original_y, max_y))
-                return (original_x, original_y, width, height)
-            except Exception as e: print(f"PlacementView.get_roi_original_coords: EXCEPTION: {e}"); traceback.print_exc(); return None
-        else: return None
+        if not self.rect_item:
+            return None
+        pos = self.rect_item.scenePos()
+        ox, oy = pos.x() / self.current_scale_factor, pos.y() / self.current_scale_factor
+        w, h = TARGET_RECT_WIDTH_ORIGINAL, TARGET_RECT_HEIGHT_ORIGINAL
+        return (max(0, min(ox, self.original_image_size.width() - w)),
+                max(0, min(oy, self.original_image_size.height() - h)), w, h)
 
-# --- Main Application Window ---
+    def show_existing_roi(self, roi):
+        """Display a previously defined region of interest."""
+        if not self.pixmap_item:
+            return
+            
+        # Get the ROI coordinates from original image
+        orig_x, orig_y, orig_w, orig_h = roi
+        
+        # Scale to the current display size
+        scaled_x = orig_x * self.current_scale_factor
+        scaled_y = orig_y * self.current_scale_factor
+        
+        # Create or reposition the rectangle
+        if not self.rect_item:
+            self.create_initial_rectangle(self.pixmap_item.boundingRect())
+            
+        # Position the rectangle
+        self.rect_item.setPos(scaled_x, scaled_y)
+        
+        # Change color to blue to indicate this is a saved ROI
+        pen = QPen(QColor("blue"), 1)
+        pen.setCosmetic(True)
+        self.rect_item.setPen(pen)
+
 class SeedAnalyzerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Delimitador de Sementes"); self.setGeometry(100, 100, 1100, 650)
-        self.image_paths = []; self.image_data = {}; self.current_image_path = None; self.export_data_df = None
-        
-        # Define default directory for file dialogs
-        documents_dir = "C:\\Documentos"
-        if os.path.exists(documents_dir) and os.path.isdir(documents_dir):
-            self.default_directory = documents_dir
-        else:
-            self.default_directory = os.path.expanduser("~") 
+        self.setWindowTitle("Delimitador de Sementes")
+        self.resize(1200, 700)
+        self.image_paths = []
+        self.image_data = {}
+        self.analysis_items = []
+        self.analysis_stage = False
+        docs = "C:\\Documentos"
+        self.default_directory = docs if os.path.isdir(docs) else os.path.expanduser("~")
 
-        # UI Elements Setup...
-        central_widget = QWidget(); self.setCentralWidget(central_widget); main_layout = QHBoxLayout(central_widget); splitter = QSplitter(Qt.Orientation.Horizontal)
-        left_panel_widget = QWidget(); left_layout = QVBoxLayout(left_panel_widget); self.btn_load_files = QPushButton("Selecionar Arquivos"); self.btn_load_folder = QPushButton("Selecionar Pasta")
-        self.list_widget_files = QListWidget(); self.list_widget_files.setToolTip("Clique para selecionar, [D] indica delimitado")
-        self.btn_delimit = QPushButton("Confirmar Delimitação"); self.btn_delimit.setToolTip("Salva a posição atual do retângulo")
-        left_layout.addWidget(self.btn_load_files); left_layout.addWidget(self.btn_load_folder); left_layout.addWidget(QLabel("Imagens Carregadas:")); left_layout.addWidget(self.list_widget_files); left_layout.addWidget(self.btn_delimit)
-        splitter.addWidget(left_panel_widget)
-        center_panel_widget = QWidget(); center_layout = QVBoxLayout(center_panel_widget); self.image_view = PlacementView(); center_layout.addWidget(self.image_view); splitter.addWidget(center_panel_widget)
-        right_panel_widget = QWidget(); right_layout = QVBoxLayout(right_panel_widget); self.details_label = QLabel("Detalhes:"); self.details_text = QTextEdit(); self.details_text.setReadOnly(True)
-        self.btn_export = QPushButton("Exportar Coordenadas"); right_layout.addWidget(self.details_label); right_layout.addWidget(self.details_text); right_layout.addStretch(); right_layout.addWidget(self.btn_export); splitter.addWidget(right_panel_widget)
-        main_layout.addWidget(splitter); splitter.setSizes([250, 600, 250])
-        # Connections...
-        self.btn_load_files.clicked.connect(self.load_files); self.btn_load_folder.clicked.connect(self.load_folder)
-        self.list_widget_files.currentItemChanged.connect(self.display_selected_image) # <<< REATIVADO
-        self.btn_delimit.clicked.connect(self.confirm_delimit); self.btn_export.clicked.connect(self.export_coordinates)
-        # Initial State...
-        self.btn_delimit.setEnabled(False); self.btn_export.setEnabled(False); self.statusBar().showMessage("Pronto.")
+        central = QWidget()
+        self.setCentralWidget(central)
+        v_main = QVBoxLayout(central)
 
-    # --- Slots ---
+        # Top inputs with explicit variable names
+        fields = QWidget()
+        fields.setFixedHeight(80)
+        f_layout = QHBoxLayout(fields)
+
+        # Create input fields with explicit names
+        self.input_analise = QLineEdit()
+        self.input_especie = QLineEdit()  
+        self.input_temp = QLineEdit()
+        self.input_tempo = QLineEdit()
+
+        self.input_temp.setValidator(QDoubleValidator())  # Allows decimals for temperature
+        self.input_tempo.setValidator(QIntValidator())    # Only whole numbers for hours
+
+        # Add labels and fields to layout
+        labels_fields = [
+            ("Análise:", self.input_analise),
+            ("Espécie:", self.input_especie),
+            ("Temp. Armazenamento (°C):", self.input_temp),
+            ("Tempo (h):", self.input_tempo)
+        ]
+
+        for label, widget in labels_fields:
+            f_layout.addWidget(QLabel(label))
+            widget.setPlaceholderText(label)
+            f_layout.addWidget(widget)
+        v_main.addWidget(fields)
+
+        # Main splitter
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left panel (narrow)
+        left = QWidget(); left.setMinimumWidth(60)
+        l_layout = QVBoxLayout(left)
+        self.btn_load_files = QPushButton("Selecionar Arquivos")
+        self.btn_load_folder = QPushButton("Selecionar Pasta")
+        self.list_widget = QListWidget()
+        for w in (self.btn_load_files, self.btn_load_folder, QLabel("Itens:"), self.list_widget):
+            l_layout.addWidget(w)
+        splitter.addWidget(left)
+
+        # Center panel (wide)
+        center = QWidget()
+        c_layout = QVBoxLayout(center)
+        self.image_view = PlacementView()
+        c_layout.addWidget(self.image_view, 3)
+        # Recortes e análise lado a lado
+        self.recorte_container = QWidget()
+        rc_layout = QHBoxLayout(self.recorte_container)
+        self.view_orig = QGraphicsView()
+        self.view_orig.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view_orig.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scene_orig = QGraphicsScene(self.view_orig)
+        self.view_orig.setScene(self.scene_orig)
+        rc_layout.addWidget(self.view_orig, 1)
+        self.view_analyzed = QGraphicsView()
+        self.view_analyzed.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view_analyzed.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scene_analyzed = QGraphicsScene(self.view_analyzed)
+        self.view_analyzed.setScene(self.scene_analyzed)
+        rc_layout.addWidget(self.view_analyzed, 1)
+        self.recorte_container.setVisible(False)
+        c_layout.addWidget(self.recorte_container, 2)
+        splitter.addWidget(center)
+
+        # Right panel (narrow)
+        right = QWidget(); right.setMinimumWidth(60)
+        r_layout = QVBoxLayout(right)
+        self.details_text = QTextEdit(); self.details_text.setReadOnly(True)
+        buttons = {name: QPushButton(text) for name, text in [
+            ('btn_delimit', 'Confirmar Delimitação'),
+            ('btn_analyze', 'Analisar Imagens'),
+            ('btn_confirm', 'Confirmar'),
+            ('btn_remove', 'Remover'),
+            ('btn_confirm_all', 'Confirmar Todas'),
+            ('btn_remove_all', 'Remover Todas'),
+            ('btn_confirm_report', 'Confirmar e Gerar Relatório')
+        ]}
+        for key, btn in buttons.items():
+            setattr(self, key, btn)
+            r_layout.addWidget(btn)
+        self.btn_delimit.setEnabled(False)
+        self.btn_analyze.setEnabled(False)
+        for name in ('btn_confirm', 'btn_remove', 'btn_confirm_all', 'btn_remove_all', 'btn_confirm_report'):
+            getattr(self, name).setVisible(False)
+        r_layout.insertWidget(0, self.details_text)
+        r_layout.addStretch()
+        splitter.addWidget(right)
+
+        # Proportions
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 16)
+        splitter.setStretchFactor(2, 1)
+
+        v_main.addWidget(splitter)
+
+        # Connections
+        self.btn_load_files.clicked.connect(self.load_files)
+        self.btn_load_folder.clicked.connect(self.load_folder)
+        self.list_widget.currentItemChanged.connect(self.display_selected_item)
+        self.btn_delimit.clicked.connect(self.confirm_delimit)
+        self.btn_analyze.clicked.connect(self.analyze_images)
+        self.btn_confirm.clicked.connect(self.confirm_current_analysis)
+        self.btn_remove.clicked.connect(self.remove_current_analysis)
+        self.btn_confirm_all.clicked.connect(self.confirm_all)
+        self.btn_remove_all.clicked.connect(self.remove_all)
+        self.btn_confirm_report.clicked.connect(self.generate_report)
+
+        self.statusBar().showMessage("Pronto.")
+
+    def update_details_text(self):
+        if not getattr(self, 'current_image', None): return
+        data = self.image_data.get(self.current_image, {})
+        basename = os.path.basename(self.current_image)
+        roi = data.get('roi')
+        txt = f"Arquivo: {basename}\nROI: x={roi[0]:.1f}, y={roi[1]:.1f}, w={roi[2]}, h={roi[3]}" if roi else f"Arquivo: {basename}\nROI não definida"
+        self.details_text.setText(txt)
+
     def load_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, 
-            "Selecionar Arquivos de Imagem", 
-            self.default_directory,  # Use the default directory 
-            "Arquivos de Imagem (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
-        )
-        if files: 
-            # Update default directory
+        files, _ = QFileDialog.getOpenFileNames(self, "Selecionar Arquivos de Imagem", self.default_directory,
+                                                "Imagens (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        if files:
             self.default_directory = os.path.dirname(files[0])
             self.process_selected_paths(files)
 
     def load_folder(self):
-        folder = QFileDialog.getExistingDirectory(
-            self, 
-            "Selecionar Pasta com Imagens",
-            self.default_directory  # Use the default directory
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta com Imagens", self.default_directory)
         if folder:
-            # Update default directory
-            self.default_directory = folder
-            files = []
+            imgs = [os.path.join(folder, fn) for fn in sorted(os.listdir(folder))
+                    if fn.lower().endswith(('.png','.jpg','.jpeg','.bmp','.tif','.tiff'))]
+            self.process_selected_paths(imgs)
+
     def process_selected_paths(self, paths):
-        self.image_paths = sorted(paths); self.image_data = {}; self.list_widget_files.clear()
-        self.image_view._scene.clear(); self.details_text.clear(); self.current_image_path = None
-        self.btn_delimit.setEnabled(False); self.btn_export.setEnabled(False); self.export_data_df = None
-        progress_counter = 0; total_files = len(self.image_paths)
+        self.analysis_stage = False
+
+        # Clear all input fields when loading new images
+        self.input_analise.clear()
+        self.input_especie.clear()
+        self.input_temp.clear()
+        self.input_tempo.clear()
+
+        self.image_paths = paths
+        self.image_data.clear()
+        self.analysis_items.clear()
+        self.list_widget.clear()
+        self.details_text.clear()
+        self.current_image = None
+        self.image_view.setVisible(True)
+        self.recorte_container.setVisible(False)
+        self.btn_delimit.setVisible(True)
+        self.btn_analyze.setVisible(False)
+        for w in [self.btn_confirm, self.btn_remove, self.btn_confirm_all, self.btn_remove_all, self.btn_confirm_report]:
+            w.setVisible(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            for path in self.image_paths:
-                progress_counter += 1; QApplication.processEvents(); base_name = os.path.basename(path)
-                self.statusBar().showMessage(f"Carregando {progress_counter}/{total_files}: {base_name}")
-                try:
-                    pil_img = Image.open(path); pil_img.load(); original_size = QSize(pil_img.width, pil_img.height); pil_img_rgb = pil_img.convert('RGB')
-                    self.image_data[path] = { 'pil_image_rgb': pil_img_rgb, 'original_size': original_size, 'roi': None }; item = QListWidgetItem(base_name); self.list_widget_files.addItem(item)
-                except Exception as e:
-                    print(f"Erro ao carregar {path}: {e}"); self.statusBar().showMessage(f"Erro ao carregar {base_name}", 5000)
-                    QMessageBox.warning(self, "Erro de Carga", f"Não foi possível carregar a imagem:\n{path}\n\nErro: {e}")
-                    item = QListWidgetItem(f"{base_name} [ERRO CARREGAMENTO]"); item.setForeground(QColor("red")); self.list_widget_files.addItem(item)
-        finally: QApplication.restoreOverrideCursor()
-        self.statusBar().showMessage(f"{total_files} imagens carregadas.", 5000)
-        if self.list_widget_files.count() > 0: # <<< REATIVADO: Auto-seleção >>>
-            first_valid_row = -1
-            for i in range(self.list_widget_files.count()):
-                 list_item = self.list_widget_files.item(i)
-                 if list_item and list_item.text() and not "[ERRO" in list_item.text(): first_valid_row = i; break
-            if first_valid_row != -1: self.list_widget_files.setCurrentRow(first_valid_row)
-
-    def display_selected_image(self, current_item: QListWidgetItem | None, previous_item: QListWidgetItem | None):
-        if not current_item or not current_item.text():
-            self.image_view._scene.clear(); self.details_text.setText("Selecione uma imagem.")
-            self.current_image_path = None; self.btn_delimit.setEnabled(False); return
-        if "[ERRO" in current_item.text():
-            self.image_view._scene.clear(); self.details_text.setText("Erro ao carregar esta imagem.")
-            self.current_image_path = None; self.btn_delimit.setEnabled(False); return
-
-        filename = current_item.text().replace(" [D]", "")
-        path = next((p for p in self.image_data if os.path.basename(p) == filename), None)
-        if path and path in self.image_data:
-            self.current_image_path = path; img_data = self.image_data[path]; pil_img_rgb = img_data.get('pil_image_rgb')
-            if not pil_img_rgb: QMessageBox.critical(self, "Erro Interno", f"Dados da imagem não encontrados para {filename}"); return
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        
+        valid_images = 0
+        for path in paths:
             try:
-                width = pil_img_rgb.width; height = pil_img_rgb.height; np_array = np.array(pil_img_rgb, dtype=np.uint8)
-                if not np_array.flags['C_CONTIGUOUS']: np_array = np.ascontiguousarray(np_array)
-                if np_array.ndim != 3 or np_array.shape[2] != 3: raise ValueError(f"NumPy shape error: {np_array.shape}")
-                bytes_per_line = width * 3; q_img = QImage(np_array.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-                q_img_copy = q_img.copy()
-                if q_img_copy.isNull(): raise ValueError("Failed QImage creation.")
-                pixmap = QPixmap.fromImage(q_img_copy)
-                if pixmap.isNull(): raise ValueError("Failed QPixmap creation.")
-                self.image_view.set_image(pixmap) # Exibe imagem e cria rect inicial
-                self.btn_delimit.setEnabled(True)
-                roi_data = img_data.get('roi') # Mostra ROI existente
-                if roi_data: self.image_view.show_existing_roi(roi_data)
-                self.update_details_text()
+                # Open the image and check dimensions
+                pil = Image.open(path).convert('RGB')
+                width, height = pil.size
+                
+                # Check if image is large enough for the delimitation rectangle
+                if width < TARGET_RECT_WIDTH_ORIGINAL or height < TARGET_RECT_HEIGHT_ORIGINAL:
+                    # Image too small, add error entry
+                    itm = QListWidgetItem(f"{os.path.basename(path)} [TAMANHO INSUFICIENTE]")
+                    itm.setForeground(QColor('red'))
+                    self.list_widget.addItem(itm)
+                    continue
+                    
+                # Image passed validation
+                self.image_data[path] = {'pil': pil, 'roi': None}
+                self.list_widget.addItem(QListWidgetItem(os.path.basename(path)))
+                valid_images += 1
+                
             except Exception as e:
-                 print(f"display_selected_image: EXCEPTION: {e}"); traceback.print_exc()
-                 self.statusBar().showMessage(f"Erro ao exibir {filename}", 5000); QMessageBox.critical(self, "Erro de Exibição", f"Não foi possível processar/exibir imagem:\n{filename}\n\nErro: {e}")
-                 self.image_view._scene.clear(); self.details_text.setText(f"Erro ao exibir:\n{filename}\n{e}"); self.current_image_path = None; self.btn_delimit.setEnabled(False)
-            finally: QApplication.restoreOverrideCursor()
+                itm = QListWidgetItem(f"{os.path.basename(path)} [ERRO]")
+                itm.setForeground(QColor('red'))
+                self.list_widget.addItem(itm)
+        
+        QApplication.restoreOverrideCursor()
+        
+        # Show message if no valid images were loaded
+        if valid_images == 0:
+            QMessageBox.warning(self, "Aviso", 
+                            "Nenhuma imagem válida foi carregada. Todas as imagens são menores que o tamanho mínimo necessário " +
+                            f"({TARGET_RECT_WIDTH_ORIGINAL}x{TARGET_RECT_HEIGHT_ORIGINAL} pixels).")
         else:
-            self.image_view._scene.clear(); self.details_text.setText(f"Erro interno: Dados não encontrados para\n{filename}"); self.current_image_path = None; self.btn_delimit.setEnabled(False)
+            # Select first valid image
+            for i in range(self.list_widget.count()):
+                item_text = self.list_widget.item(i).text()
+                if '[ERRO]' not in item_text and '[TAMANHO INSUFICIENTE]' not in item_text:
+                    self.list_widget.setCurrentRow(i)
+                    break
 
-    def keyPressEvent(self, event):
-        """Handle key press events for the main window."""
-        # Check if Enter/Return was pressed
-        if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
-            # Only process if we have a non-delimited image selected
-            current_item = self.list_widget_files.currentItem()
-            if (current_item and 
-                self.current_image_path and 
-                not "[ERRO" in current_item.text() and 
-                not current_item.text().endswith(" [D]")):
-                # Call the same method that the button uses
-                self.confirm_delimit()
-            return
-        # For other keys, use the default handler
-        super().keyPressEvent(event)
+    def display_selected_item(self, current, previous=None):
+        if not current: return
+        name = current.text()
+        if not self.analysis_stage:
+            if '[ERRO]' in name:
+                self.image_view._scene.clear()
+                self.details_text.setText("Erro ao carregar esta imagem.")
+                self.btn_delimit.setEnabled(False)
+                return
+            path = next((p for p in self.image_data if os.path.basename(p)==name.replace(' [D]','')), None)
+            if not path: return
+            self.current_image = path
+            data = self.image_data[path]
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            arr = np.array(data['pil'], dtype=np.uint8)
+            h, w, _ = arr.shape
+            img = QImage(arr.data, w, h, w*3, QImage.Format.Format_RGB888)
+            pix = QPixmap.fromImage(img)
+            self.image_view.set_image(pix)
+
+            roi_data = data.get('roi')
+            if roi_data:
+                self.image_view.show_existing_roi(roi_data)
+           
+            self.btn_delimit.setEnabled(True)
+            self.update_details_text()
+            QApplication.restoreOverrideCursor()
+        else:
+            idx = self.list_widget.currentRow()
+            item = self.analysis_items[idx]
+            self.scene_orig.clear(); self.scene_orig.addPixmap(QPixmap(item['recorte']))
+            self.view_orig.fitInView(self.scene_orig.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self.scene_analyzed.clear(); self.scene_analyzed.addPixmap(QPixmap(item['analysed']))
+            self.view_analyzed.fitInView(self.scene_analyzed.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            cnt = item['counts']
+            status = item['status'] or 'Aguardando'
+            self.details_text.setText(
+                f"Arquivo: {os.path.basename(item['recorte'])}\n"
+                f"Total sementes: {cnt['total']}\nViáveis: {cnt['viable']}\nInviáveis: {cnt['inviable']}\nStatus: {status}"
+            )
 
     def confirm_delimit(self):
-        if not self.current_image_path or not self.image_view.rect_item: QMessageBox.warning(self, "Aviso", "Carregue e exiba uma imagem e certifique-se que o retângulo está visível."); return
-        roi_original = self.image_view.get_roi_original_coords()
-        if not roi_original: QMessageBox.warning(self, "Aviso", "Não foi possível obter coordenadas do retângulo."); return
-        self.image_data[self.current_image_path]['roi'] = roi_original; current_row = self.list_widget_files.currentRow()
-        if current_row >= 0:
-            item = self.list_widget_files.item(current_row)
-            if item and item.text() and not item.text().endswith(" [D]") and not "[ERRO" in item.text(): item.setText(item.text() + " [D]")
-        self.update_details_text()
-        pen = QPen(QColor("blue"), 1); pen.setCosmetic(True) # Muda para azul
-        if self.image_view.rect_item: self.image_view.rect_item.setPen(pen)
-        any_delimited = any(data.get('roi', None) is not None for data in self.image_data.values()); self.btn_export.setEnabled(any_delimited)
-        # Auto-advance logic...
-        next_row = -1; start_row = current_row if current_row >= 0 else -1
-        if start_row != -1:
-            for i in range(start_row + 1, self.list_widget_files.count()):
-                list_item = self.list_widget_files.item(i)
-                if list_item and list_item.text() and not "[ERRO" in list_item.text() and not list_item.text().endswith(" [D]"): next_row = i; break
-            if next_row == -1:
-                for i in range(start_row):
-                    list_item = self.list_widget_files.item(i)
-                    if list_item and list_item.text() and not "[ERRO" in list_item.text() and not list_item.text().endswith(" [D]"): next_row = i; break
-            if next_row != -1: self.list_widget_files.setCurrentRow(next_row)
-            else:
-                all_done = True
-                for i in range(self.list_widget_files.count()):
-                    list_item = self.list_widget_files.item(i)
-                    if list_item and list_item.text() and not "[ERRO" in list_item.text() and not list_item.text().endswith(" [D]"): all_done = False; break
-                if all_done: QMessageBox.information(self,"Informação", "Todas as imagens válidas foram delimitadas.")
+        if not self.current_image: return
+        roi = self.image_view.get_roi_original_coords()
+        if not roi:
+            QMessageBox.warning(self, "Aviso", "Não foi possível obter coordenadas.")
+            return
+        self.image_data[self.current_image]['roi'] = roi
+        itm = self.list_widget.currentItem()
+        if itm and not itm.text().endswith(' [D]'):
+            itm.setText(itm.text() + ' [D]')
+        if all(d['roi'] is not None for d in self.image_data.values()):
+            self.btn_analyze.setVisible(True)
+            self.btn_analyze.setEnabled(True)
+            QMessageBox.information(self, "Info", "Todas as imagens foram delimitadas.")
+        for i in range(self.list_widget.count()):
+            txt = self.list_widget.item(i).text()
+            if '[ERRO]' not in txt and not txt.endswith(' [D]'):
+                self.list_widget.setCurrentRow(i)
+                break
 
-    def update_details_text(self):
-        if not self.current_image_path or self.current_image_path not in self.image_data: self.details_text.clear(); return
-        path = self.current_image_path; img_data = self.image_data[path]; filename = os.path.basename(path); original_size = img_data.get('original_size', QSize(0,0)); roi = img_data.get('roi', None)
-        details = f"Arquivo: {filename}\n";
-        if original_size.isValid(): details += f"Dimensões Originais: {original_size.width()} x {original_size.height()} px\n"
-        else: details += "Dimensões Originais: (inválido)\n"
-        details += f"Status: {'Delimitado' if roi else 'Aguardando delimitação'}\n\n"
-        if roi:
-            if isinstance(roi, tuple) and len(roi) == 4:
-                details += "Coordenadas ROI (Imagem Original):\n"; details += f"  X: {roi[0]:.3f} px\n"; details += f"  Y: {roi[1]:.3f} px\n";
-                details += f"  Largura: {roi[2]:.3f} px\n"; details += f"  Altura: {roi[3]:.3f} px\n"
-            else: details += "Coordenadas ROI: (Formato inválido)\n"
-        self.details_text.setText(details)
+    # --- Analyze images: crop, stub analysis, switch UI ---
+    def analyze_images(self):
+        # ensure all delim
+        if any(data['roi'] is None for data in self.image_data.values()):
+            QMessageBox.warning(self, "Aviso", "Delimite todas as imagens antes de analisar.")
+            return
+        # prepare output folder
+        base = os.path.dirname(self.image_paths[0])
+        out_dir = os.path.join(base, 'imagens_recortadas')
+        os.makedirs(out_dir, exist_ok=True)
+        self.analysis_items = []
+        # cropping and stub analysis
+        for path, data in self.image_data.items():
+            ox, oy, ow, oh = map(int, data['roi'])
+            tile_w = ow // TILE_COLS
+            tile_h = oh // TILE_ROWS
+            for idx in range(TILE_COLS * TILE_ROWS):
+                row = idx // TILE_COLS
+                col = idx % TILE_COLS
+                left = ox + col * tile_w
+                top = oy + row * tile_h
+                crop = data['pil'].crop((left, top, left+tile_w, top+tile_h))
+                base_name = os.path.splitext(os.path.basename(path))[0]
+                rec_name = f"{base_name}_{idx+1}.png"
+                rec_path = os.path.join(out_dir, rec_name)
+                crop.save(rec_path)
+                # stub analysis: copy for now
+                ana_name = f"{base_name}_{idx+1}_analisada.png"
+                ana_path = os.path.join(out_dir, ana_name)
+                crop.save(ana_path)
+                # generic counts
+                total = random.randint(5, 15)
+                viable = random.randint(0, total)
+                invi = total - viable
+                self.analysis_items.append({
+                    'recorte': rec_path,
+                    'analysed': ana_path,
+                    'counts': {'total': total, 'viable': viable, 'inviable': invi},
+                    'status': None
+                })
+        # switch to analysis stage
+        self.analysis_stage = True
+        self.image_view.setVisible(False)
+        self.recorte_container.setVisible(True)
+        self.btn_delimit.setVisible(False)
+        self.btn_analyze.setVisible(False)
+        for w in [self.btn_confirm_all, self.btn_remove_all, self.btn_confirm, self.btn_remove, self.btn_confirm_report]:
+            w.setVisible(True)
+        # repopulate list
+        self.list_widget.clear()
+        for item in self.analysis_items:
+            self.list_widget.addItem(os.path.basename(item['recorte']))
+        # connect to analysis display
+        self.list_widget.currentItemChanged.disconnect()
+        self.list_widget.currentItemChanged.connect(self.display_selected_item)
+        # select first
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
 
-    def export_coordinates(self):
-        export_list = []
-        for path in self.image_paths:
-             if path in self.image_data:
-                 data = self.image_data[path]
-                 if data.get('roi', None):
-                     roi = data['roi']
-                     if isinstance(roi, tuple) and len(roi) == 4: export_list.append({ 'filename': os.path.basename(path), 'roi_x_original': roi[0], 'roi_y_original': roi[1], 'roi_width_original': roi[2], 'roi_height_original': roi[3] })
-                     else: print(f"Warning: Skipping export for {os.path.basename(path)} due to invalid ROI data: {roi}")
-        if not export_list: QMessageBox.warning(self, "Exportar", "Nenhuma coordenada válida definida."); return
-        self.export_data_df = pd.DataFrame(export_list); fileName, selectedFilter = QFileDialog.getSaveFileName( self, "Salvar Coordenadas Delimitadas", "", "Arquivo Excel (*.xlsx);;Arquivo CSV (*.csv)" )
-        if fileName:
-            try:
-                if selectedFilter == "Arquivo Excel (*.xlsx)" and not fileName.lower().endswith('.xlsx'): fileName += '.xlsx'
-                elif selectedFilter == "Arquivo CSV (*.csv)" and not fileName.lower().endswith('.csv'): fileName += '.csv'
-                if fileName.lower().endswith('.xlsx'): self.export_data_df.to_excel(fileName, index=False, engine='openpyxl', float_format="%.3f")
-                elif fileName.lower().endswith('.csv'): self.export_data_df.to_csv(fileName, index=False, encoding='utf-8-sig', float_format="%.3f")
-                QMessageBox.information(self, "Exportar", f"Coordenadas exportadas com sucesso para:\n{fileName}")
-            except Exception as e: print(f"Erro ao exportar dados: {e}"); self.statusBar().showMessage(f"Erro ao exportar para {fileName}", 5000); QMessageBox.critical(self, "Erro de Exportação", f"Não foi possível salvar o arquivo:\n{e}")
+    # --- Display selected analysis item ---
+    def display_selected_analysis_item(self, current, previous=None):
+        if not current:
+            return
+        name = current.text()
+        idx = self.list_widget.currentRow()
+        data = self.analysis_items[idx]
+        # show original recorte
+        pix_o = QPixmap(data['recorte'])
+        self.scene_orig.clear(); self.scene_orig.addPixmap(pix_o)
+        # show analysed
+        pix_a = QPixmap(data['analysed'])
+        self.scene_analyzed.clear(); self.scene_analyzed.addPixmap(pix_a)
+        # details
+        cnt = data['counts']
+        status = data['status'] or 'Aguardando'
+        txt = f"Arquivo: {name}\nTotal sementes: {cnt['total']}\nViáveis: {cnt['viable']}\nInviáveis: {cnt['inviable']}\nStatus: {status}"
+        self.details_text.setText(txt)
 
-# --- Main Execution ---
+    # --- Confirm/Remove logic ---
+    def confirm_current_analysis(self):
+        idx = self.list_widget.currentRow()
+        self.analysis_items[idx]['status'] = 'Confirmado'
+        itm = self.list_widget.item(idx)
+        itm.setText(f"{itm.text()} [C]")
+        self.next_analysis()
+
+    def remove_current_analysis(self):
+        idx = self.list_widget.currentRow()
+        self.analysis_items[idx]['status'] = 'Removido'
+        itm = self.list_widget.item(idx)
+        itm.setText(f"{itm.text()} [R]")
+        self.next_analysis()
+
+    def next_analysis(self):
+        # advance to next unmarked
+        for i, it in enumerate(self.analysis_items):
+            if it['status'] is None:
+                self.list_widget.setCurrentRow(i)
+                return
+        QMessageBox.information(self, "Info", "Todos os itens foram marcados.")
+
+    def confirm_all(self):
+        for i, it in enumerate(self.analysis_items):
+            it['status'] = 'Confirmado'
+            self.list_widget.item(i).setText(f"{os.path.basename(it['recorte'])} [C]")
+        self.display_selected_analysis_item(None)
+
+    def remove_all(self):
+        for i, it in enumerate(self.analysis_items):
+            it['status'] = 'Removido'
+            self.list_widget.item(i).setText(f"{os.path.basename(it['recorte'])} [R]")
+        self.display_selected_analysis_item(None)
+
+    # --- Generate report ---
+    def generate_report(self):
+        # Get text values with proper error handling
+        try:
+            required_inputs = {
+                "Análise": self.input_analise.text().strip(),
+                "Espécie": self.input_especie.text().strip(),
+                "Temperatura": self.input_temp.text().strip(),
+                "Tempo": self.input_tempo.text().strip()
+            }
+            
+            # Find any empty fields
+            empty_fields = [field for field, value in required_inputs.items() if not value]
+            
+            # If any fields are empty, show warning
+            if empty_fields:
+                empty_list = "\n• ".join(empty_fields)
+                QMessageBox.warning(self, "Campos Obrigatórios", 
+                                f"Por favor preencha os seguintes campos:\n\n• {empty_list}")
+                return
+            
+            # Continue with report generation
+            print("===== Relatório =====")
+            print(f"Análise: {required_inputs['Análise']}")
+            print(f"Espécie: {required_inputs['Espécie']}")
+            print(f"Temperatura: {required_inputs['Temperatura']} °C")
+            print(f"Tempo: {required_inputs['Tempo']} h")
+            for it in self.analysis_items:
+                if it['status'] == 'Confirmado':
+                    name = os.path.basename(it['recorte'])
+                    cnt = it['counts']
+                    print(f"{name}: Total={cnt['total']}, Viáveis={cnt['viable']}, Inviáveis={cnt['inviable']}")
+            QMessageBox.information(self, "Relatório", "Relatório impresso no console.")
+        except Exception as e:
+            print(f"Erro ao gerar relatório: {e}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "Erro", "Erro ao acessar campos de entrada. Verifique o console para detalhes.")
+
+# --- Main ---
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    main_window = SeedAnalyzerApp()
-    main_window.showMaximized()  
+    win = SeedAnalyzerApp()
+    win.showMaximized()
     sys.exit(app.exec())
