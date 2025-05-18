@@ -153,6 +153,14 @@ class SeedAnalyzerApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Delimitador de Sementes"); self.setGeometry(100, 100, 1100, 650)
         self.image_paths = []; self.image_data = {}; self.current_image_path = None; self.export_data_df = None
+        
+        # Define default directory for file dialogs
+        documents_dir = "C:\\Documentos"
+        if os.path.exists(documents_dir) and os.path.isdir(documents_dir):
+            self.default_directory = documents_dir
+        else:
+            self.default_directory = os.path.expanduser("~") 
+
         # UI Elements Setup...
         central_widget = QWidget(); self.setCentralWidget(central_widget); main_layout = QHBoxLayout(central_widget); splitter = QSplitter(Qt.Orientation.Horizontal)
         left_panel_widget = QWidget(); left_layout = QVBoxLayout(left_panel_widget); self.btn_load_files = QPushButton("Selecionar Arquivos"); self.btn_load_folder = QPushButton("Selecionar Pasta")
@@ -173,15 +181,27 @@ class SeedAnalyzerApp(QMainWindow):
 
     # --- Slots ---
     def load_files(self):
-        files, _ = QFileDialog.getOpenFileNames( self, "Selecionar Arquivos de Imagem", "", "Arquivos de Imagem (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)" )
-        if files: self.process_selected_paths(files)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, 
+            "Selecionar Arquivos de Imagem", 
+            self.default_directory,  # Use the default directory 
+            "Arquivos de Imagem (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        )
+        if files: 
+            # Update default directory
+            self.default_directory = os.path.dirname(files[0])
+            self.process_selected_paths(files)
+
     def load_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta com Imagens")
-        if folder: files = []; valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
-        for filename in os.listdir(folder):
-             if filename.lower().endswith(valid_extensions): files.append(os.path.join(folder, filename))
-        if files: self.process_selected_paths(files)
-        else: QMessageBox.warning(self, "Aviso", "Nenhuma imagem encontrada na pasta selecionada.")
+        folder = QFileDialog.getExistingDirectory(
+            self, 
+            "Selecionar Pasta com Imagens",
+            self.default_directory  # Use the default directory
+        )
+        if folder:
+            # Update default directory
+            self.default_directory = folder
+            files = []
     def process_selected_paths(self, paths):
         self.image_paths = sorted(paths); self.image_data = {}; self.list_widget_files.clear()
         self.image_view._scene.clear(); self.details_text.clear(); self.current_image_path = None
