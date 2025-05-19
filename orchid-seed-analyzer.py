@@ -161,18 +161,32 @@ class SeedAnalyzerApp(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
+
         v_main = QVBoxLayout(central)
+        v_main.setContentsMargins(0, 0, 0, 0)
+        v_main.setSpacing(0)
 
         # Top inputs with explicit variable names
         fields = QWidget()
-        fields.setFixedHeight(80)
+        fields.setFixedHeight(24) 
         f_layout = QHBoxLayout(fields)
+        f_layout.setContentsMargins(2, 0, 2, 0)
+        f_layout.setSpacing(3)
 
         # Create input fields with explicit names
         self.input_analise = QLineEdit()
         self.input_especie = QLineEdit()  
         self.input_temp = QLineEdit()
         self.input_tempo = QLineEdit()
+
+        self.input_analise.setPlaceholderText("Digite o nome da análise")
+        self.input_especie.setPlaceholderText("Digite o nome da espécie")
+        self.input_temp.setPlaceholderText("Digite a temperatura em °C")
+        self.input_tempo.setPlaceholderText("Digite o tempo em horas")
+
+        for field in [self.input_analise, self.input_especie, self.input_temp, self.input_tempo]:
+            field.setMaximumHeight(20)  # Reduced from 22px to 20px
+            field.setFixedHeight(20)  
 
         self.input_temp.setValidator(QDoubleValidator())  # Allows decimals for temperature
         self.input_tempo.setValidator(QIntValidator())    # Only whole numbers for hours
@@ -187,7 +201,6 @@ class SeedAnalyzerApp(QMainWindow):
 
         for label, widget in labels_fields:
             f_layout.addWidget(QLabel(label))
-            widget.setPlaceholderText(label)
             f_layout.addWidget(widget)
         v_main.addWidget(fields)
 
@@ -233,10 +246,10 @@ class SeedAnalyzerApp(QMainWindow):
         r_layout = QVBoxLayout(right)
         self.details_text = QTextEdit(); self.details_text.setReadOnly(True)
         buttons = {name: QPushButton(text) for name, text in [
-            ('btn_delimit', 'Confirmar Delimitação'),
+            ('btn_delimit', 'Delimitar [D]'),
             ('btn_analyze', 'Analisar Imagens'),
-            ('btn_confirm', 'Confirmar'),
-            ('btn_remove', 'Remover'),
+            ('btn_confirm', 'Confirmar [C]'),
+            ('btn_remove', 'Remover [R]'),
             ('btn_confirm_all', 'Confirmar Todas'),
             ('btn_remove_all', 'Remover Todas'),
             ('btn_confirm_report', 'Confirmar e Gerar Relatório')
@@ -272,6 +285,37 @@ class SeedAnalyzerApp(QMainWindow):
         self.btn_confirm_report.clicked.connect(self.generate_report)
 
         self.statusBar().showMessage("Pronto.")
+
+    def keyPressEvent(self, event):
+        # Check if Enter/Return is pressed and we're in delimitation mode
+        if (event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter) and \
+        not self.analysis_stage and \
+        self.btn_delimit.isVisible() and \
+        self.btn_delimit.isEnabled():
+            # Call the same function as the "Confirmar Delimitação" button
+            self.confirm_delimit()
+        # Add Ctrl+D as an additional shortcut for delimitation
+        elif event.key() == Qt.Key.Key_D and \
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
+            not self.analysis_stage and \
+            self.btn_delimit.isVisible() and \
+            self.btn_delimit.isEnabled():
+            self.confirm_delimit()
+        # Handle Ctrl+C to confirm in analysis mode
+        elif event.key() == Qt.Key.Key_C and \
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
+            self.analysis_stage and \
+            self.btn_confirm.isVisible():
+            self.confirm_current_analysis()
+        # Handle Ctrl+R to remove in analysis mode
+        elif event.key() == Qt.Key.Key_R and \
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
+            self.analysis_stage and \
+            self.btn_remove.isVisible():
+            self.remove_current_analysis()
+        else:
+            # Pass other key events to parent class
+            super().keyPressEvent(event)
 
     def update_details_text(self):
         if not getattr(self, 'current_image', None): return
@@ -419,6 +463,11 @@ class SeedAnalyzerApp(QMainWindow):
                 self.list_widget.setCurrentRow(i)
                 break
 
+    def update_report_button_state(self):
+        """Enable report button only when all items have been processed."""
+        all_processed = all(item['status'] in ['Confirmado', 'Removido'] for item in self.analysis_items)
+        self.btn_confirm_report.setEnabled(all_processed)
+
     # --- Analyze images: crop, stub analysis, switch UI ---
     def analyze_images(self):
         # ensure all delim
@@ -467,6 +516,8 @@ class SeedAnalyzerApp(QMainWindow):
         self.btn_analyze.setVisible(False)
         for w in [self.btn_confirm_all, self.btn_remove_all, self.btn_confirm, self.btn_remove, self.btn_confirm_report]:
             w.setVisible(True)
+
+        self.btn_confirm_report.setEnabled(False)
         # repopulate list
         self.list_widget.clear()
         for item in self.analysis_items:
@@ -477,6 +528,9 @@ class SeedAnalyzerApp(QMainWindow):
         # select first
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
+        
+        self.activateWindow()  # Make sure the window stays active
+        self.list_widget.setFocus()  
 
     # --- Display selected analysis item ---
     def display_selected_analysis_item(self, current, previous=None):
@@ -498,18 +552,28 @@ class SeedAnalyzerApp(QMainWindow):
         self.details_text.setText(txt)
 
     # --- Confirm/Remove logic ---
+    # Modified confirm_current_analysis method
     def confirm_current_analysis(self):
         idx = self.list_widget.currentRow()
         self.analysis_items[idx]['status'] = 'Confirmado'
         itm = self.list_widget.item(idx)
-        itm.setText(f"{itm.text()} [C]")
+        
+        # Get base filename without any status tags
+        base_name = os.path.basename(self.analysis_items[idx]['recorte'])
+        itm.setText(f"{base_name} [C]")
+        self.update_report_button_state()
         self.next_analysis()
 
+    # Modified remove_current_analysis method
     def remove_current_analysis(self):
         idx = self.list_widget.currentRow()
         self.analysis_items[idx]['status'] = 'Removido'
         itm = self.list_widget.item(idx)
-        itm.setText(f"{itm.text()} [R]")
+        
+        # Get base filename without any status tags
+        base_name = os.path.basename(self.analysis_items[idx]['recorte'])
+        itm.setText(f"{base_name} [R]")
+        self.update_report_button_state()
         self.next_analysis()
 
     def next_analysis(self):
@@ -524,13 +588,21 @@ class SeedAnalyzerApp(QMainWindow):
         for i, it in enumerate(self.analysis_items):
             it['status'] = 'Confirmado'
             self.list_widget.item(i).setText(f"{os.path.basename(it['recorte'])} [C]")
-        self.display_selected_analysis_item(None)
+        self.update_report_button_state()
+        # Use display_selected_item (not display_selected_analysis_item)
+        current_item = self.list_widget.currentItem()
+        if current_item:
+            self.display_selected_item(current_item)
 
     def remove_all(self):
         for i, it in enumerate(self.analysis_items):
             it['status'] = 'Removido'
             self.list_widget.item(i).setText(f"{os.path.basename(it['recorte'])} [R]")
-        self.display_selected_analysis_item(None)
+        self.update_report_button_state()
+        # Use display_selected_item (not display_selected_analysis_item)
+        current_item = self.list_widget.currentItem()
+        if current_item:
+            self.display_selected_item(current_item)
 
     # --- Generate report ---
     def generate_report(self):
