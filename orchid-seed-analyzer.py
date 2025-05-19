@@ -141,11 +141,6 @@ class PlacementView(QGraphicsView):
             
         # Position the rectangle
         self.rect_item.setPos(scaled_x, scaled_y)
-        
-        # Change color to blue to indicate this is a saved ROI
-        pen = QPen(QColor("blue"), 1)
-        pen.setCosmetic(True)
-        self.rect_item.setPen(pen)
 
 class SeedAnalyzerApp(QMainWindow):
     def __init__(self):
@@ -361,9 +356,17 @@ class SeedAnalyzerApp(QMainWindow):
         for w in [self.btn_confirm, self.btn_remove, self.btn_confirm_all, self.btn_remove_all, self.btn_confirm_report]:
             w.setVisible(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        # Show initial loading message
+        self.statusBar().showMessage(f"Carregando 0 de {len(paths)} imagens...")
+        QApplication.processEvents()  # Process events to update UI
         
         valid_images = 0
-        for path in paths:
+        for i, path in enumerate(paths):
+            # Update status bar with progress
+            self.statusBar().showMessage(f"Carregando {i+1} de {len(paths)} imagens...")
+            QApplication.processEvents()  # Process events to update UI
+            
             try:
                 # Open the image and check dimensions
                 pil = Image.open(path).convert('RGB')
@@ -386,6 +389,9 @@ class SeedAnalyzerApp(QMainWindow):
                 itm = QListWidgetItem(f"{os.path.basename(path)} [ERRO]")
                 itm.setForeground(QColor('red'))
                 self.list_widget.addItem(itm)
+
+        self.statusBar().showMessage(f"Pronto.")
+        QApplication.processEvents() 
         
         QApplication.restoreOverrideCursor()
         
@@ -474,6 +480,11 @@ class SeedAnalyzerApp(QMainWindow):
         if any(data['roi'] is None for data in self.image_data.values()):
             QMessageBox.warning(self, "Aviso", "Delimite todas as imagens antes de analisar.")
             return
+
+        # Initial status update
+        self.statusBar().showMessage("Preparando análise...")
+        QApplication.processEvents()
+
         # prepare output folder
         base = os.path.dirname(self.image_paths[0])
         out_dir = os.path.join(base, 'imagens_recortadas')
@@ -481,6 +492,11 @@ class SeedAnalyzerApp(QMainWindow):
         self.analysis_items = []
         # cropping and stub analysis
         for path, data in self.image_data.items():
+            # Update status with file name
+            base_file = os.path.basename(path)
+            self.statusBar().showMessage(f"Recortando imagem: {base_file}...")
+            QApplication.processEvents()
+
             ox, oy, ow, oh = map(int, data['roi'])
             tile_w = ow // TILE_COLS
             tile_h = oh // TILE_ROWS
@@ -489,11 +505,21 @@ class SeedAnalyzerApp(QMainWindow):
                 col = idx % TILE_COLS
                 left = ox + col * tile_w
                 top = oy + row * tile_h
+
+                # Status update for this specific tile
+                self.statusBar().showMessage(f"Recortando imagem {base_file}: seção {idx+1}/{TILE_COLS*TILE_ROWS}...")
+                QApplication.processEvents()
+
                 crop = data['pil'].crop((left, top, left+tile_w, top+tile_h))
                 base_name = os.path.splitext(os.path.basename(path))[0]
                 rec_name = f"{base_name}_{idx+1}.png"
                 rec_path = os.path.join(out_dir, rec_name)
                 crop.save(rec_path)
+
+                # Status update for analysis
+                self.statusBar().showMessage(f"Analisando imagem {base_file}: seção {idx+1}/{TILE_COLS*TILE_ROWS}...")
+                QApplication.processEvents()
+
                 # stub analysis: copy for now
                 ana_name = f"{base_name}_{idx+1}_analisada.png"
                 ana_path = os.path.join(out_dir, ana_name)
@@ -508,6 +534,11 @@ class SeedAnalyzerApp(QMainWindow):
                     'counts': {'total': total, 'viable': viable, 'inviable': invi},
                     'status': None
                 })
+
+        # Final status update
+        self.statusBar().showMessage("Pronto.")
+        QApplication.processEvents()
+
         # switch to analysis stage
         self.analysis_stage = True
         self.image_view.setVisible(False)
