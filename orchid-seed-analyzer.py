@@ -14,6 +14,8 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QDoubleValidato
 from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSizeF
 from PIL import Image
 import traceback
+import csv
+from datetime import datetime
 
 # --- Configuration ---
 TARGET_RECT_WIDTH_ORIGINAL = 5676
@@ -656,22 +658,68 @@ class SeedAnalyzerApp(QMainWindow):
                                 f"Por favor preencha os seguintes campos:\n\n• {empty_list}")
                 return
             
-            # Continue with report generation
-            print("===== Relatório =====")
-            print(f"Análise: {required_inputs['Análise']}")
-            print(f"Espécie: {required_inputs['Espécie']}")
-            print(f"Temperatura: {required_inputs['Temperatura']} °C")
-            print(f"Tempo: {required_inputs['Tempo']} h")
-            for it in self.analysis_items:
-                if it['status'] == 'Confirmado':
-                    name = os.path.basename(it['recorte'])
-                    cnt = it['counts']
-                    print(f"{name}: Total={cnt['total']}, Viáveis={cnt['viable']}, Inviáveis={cnt['inviable']}")
-            QMessageBox.information(self, "Relatório", "Relatório impresso no console.")
+            # Continue with report generation - prepare data
+            confirmed_items = [item for item in self.analysis_items if item['status'] == 'Confirmado']
+            if not confirmed_items:
+                QMessageBox.warning(self, "Aviso", "Não há itens confirmados para gerar o relatório.")
+                return
+                
+            # Create CSV file
+            timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+            base_dir = os.path.dirname(self.image_paths[0])
+            filename = os.path.join(base_dir, f"relatorio_{required_inputs['Análise']}_{timestamp}.csv")
+            
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write header with metadata
+                writer.writerow(["Informações da Análise"])
+                writer.writerow(["Análise", required_inputs['Análise']])
+                writer.writerow(["Espécie", required_inputs['Espécie']])
+                writer.writerow(["Temperatura", f"{required_inputs['Temperatura']} °C"])
+                writer.writerow(["Tempo", f"{required_inputs['Tempo']} h"])
+                writer.writerow([])  # Empty row as separator
+                
+                # Write data header
+                writer.writerow(["Imagem", "Total Sementes", "Sementes Viáveis", "Sementes Inviáveis", "% Viabilidade"])
+                
+                # Write data rows
+                total_seeds = 0
+                total_viable = 0
+                
+                for item in confirmed_items:
+                    name = os.path.basename(item['recorte'])
+                    counts = item['counts']
+                    viability = round((counts['viable'] / counts['total']) * 100, 2) if counts['total'] > 0 else 0
+                    
+                    writer.writerow([
+                        name, 
+                        counts['total'], 
+                        counts['viable'], 
+                        counts['inviable'],
+                        f"{viability}%"
+                    ])
+                    
+                    total_seeds += counts['total']
+                    total_viable += counts['viable']
+                    
+                # Write summary row
+                writer.writerow([])
+                overall_viability = round((total_viable / total_seeds) * 100, 2) if total_seeds > 0 else 0
+                writer.writerow(["TOTAL", total_seeds, total_viable, total_seeds - total_viable, f"{overall_viability}%"])
+            
+            # Still print to console for reference
+            print(f"Relatório CSV gerado: {filename}")
+            
+            # Show success message with the file path
+            QMessageBox.information(self, "Relatório Gerado", 
+                                f"Relatório CSV criado com sucesso:\n{filename}")
+                                
         except Exception as e:
             print(f"Erro ao gerar relatório: {e}")
             traceback.print_exc()
-            QMessageBox.critical(self, "Erro", "Erro ao acessar campos de entrada. Verifique o console para detalhes.")
+            QMessageBox.critical(self, "Erro", 
+                            f"Erro ao gerar arquivo CSV:\n{str(e)}\nVerifique o console para detalhes.")
 
 # --- Main ---
 if __name__ == '__main__':
