@@ -23,6 +23,8 @@ TARGET_RECT_WIDTH_ORIGINAL = 5676
 TARGET_RECT_HEIGHT_ORIGINAL = 1892
 TILE_COLS = 6
 TILE_ROWS = 2
+EXPECTED_PROCESSED_WIDTH = 946
+EXPECTED_PROCESSED_HEIGHT = 946
 # --- End Configuration ---
 
 class ConstrainedRectItem(QGraphicsRectItem):
@@ -253,6 +255,7 @@ class SeedAnalyzerApp(QMainWindow):
         self.image_data = {}
         self.analysis_items = []
         self.analysis_stage = False
+        self.processed_files_base_dir = None
         docs = "C:\\Documentos"
         self.default_directory = docs if os.path.isdir(docs) else os.path.expanduser("~")
 
@@ -304,9 +307,13 @@ class SeedAnalyzerApp(QMainWindow):
         l_layout = QVBoxLayout(left)
         self.btn_load_files = QPushButton("Selecionar Arquivos")
         self.btn_load_folder = QPushButton("Selecionar Pasta")
+        self.btn_load_processed_files = QPushButton("Selecionar Arquivos Processados")
+        self.btn_load_processed_folder = QPushButton("Selecionar Pasta Processada") 
         self.list_widget = QListWidget() 
         for w in (self.btn_load_files, self.btn_load_folder, QLabel("Itens:"), self.list_widget):
             l_layout.addWidget(w)
+        l_layout.addWidget(self.btn_load_processed_files)
+        l_layout.addWidget(self.btn_load_processed_folder)
         splitter.addWidget(left)
 
         center = QWidget()
@@ -377,6 +384,8 @@ class SeedAnalyzerApp(QMainWindow):
 
         self.btn_load_files.clicked.connect(self.load_files)
         self.btn_load_folder.clicked.connect(self.load_folder)
+        self.btn_load_processed_files.clicked.connect(self.load_processed_files) 
+        self.btn_load_processed_folder.clicked.connect(self.load_processed_folder)
         self.list_widget.currentItemChanged.connect(self.display_selected_item)
         self.btn_delimit.clicked.connect(self.confirm_delimit)
         self.btn_analyze.clicked.connect(self.analyze_images)
@@ -433,6 +442,130 @@ class SeedAnalyzerApp(QMainWindow):
                 f"Arquivo: {os.path.basename(item['recorte'])}\n"
                 f"Total sementes: {cnt['total']}\nViáveis: {cnt['viable']}\nInviáveis: {cnt['inviable']}\nStatus: {status}"
             )
+    def load_processed_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Selecionar Arquivos Processados", self.default_directory,
+                                                "Imagens (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        if files:
+            self.default_directory = os.path.dirname(files[0])
+            self.process_selected_processed_paths(files)
+
+    def load_processed_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta com Imagens Processadas", self.default_directory)
+        if folder:
+            self.default_directory = folder
+            imgs = [os.path.join(folder, fn) for fn in sorted(os.listdir(folder))
+                    if fn.lower().endswith(('.png','.jpg','.jpeg','.bmp','.tif','.tiff'))]
+            self.process_selected_processed_paths(imgs)
+
+    def process_selected_processed_paths(self, paths):
+        self.analysis_stage = False 
+        self.input_analise.clear(); self.input_especie.clear(); self.input_temp.clear(); self.input_tempo.clear()
+        self.image_paths = [] 
+        self.image_data.clear()
+        self.analysis_items.clear()
+        self.list_widget.clear()
+        self.details_text.clear()
+        self.current_image = None
+        self.processed_files_base_dir = None
+
+        self.image_view.setVisible(False)
+        self.recorte_container.setVisible(True)
+        self.btn_delimit.setVisible(False)
+        self.btn_analyze.setVisible(False) 
+        
+        buttons_to_show = [
+            self.btn_confirm_all, self.btn_remove_all,
+            self.btn_confirm_remaining, self.btn_remove_remaining, 
+            self.btn_confirm, self.btn_remove, self.btn_confirm_report
+        ]
+        for btn in buttons_to_show:
+            btn.setVisible(True)
+        
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(f"Carregando 0 de {len(paths)} imagens processadas...")
+        QApplication.processEvents()
+
+        valid_processed_images = 0
+        
+        if not paths:
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage("Nenhum arquivo processado selecionado.")
+            return
+
+        self.processed_files_base_dir = os.path.dirname(paths[0])
+
+        base_output_dir_for_analysis = os.path.dirname(paths[0])
+        analyzed_output_subdir = os.path.join(base_output_dir_for_analysis, 'imagens_analisadas_das_processadas')
+        os.makedirs(analyzed_output_subdir, exist_ok=True)
+
+        for i, rec_path in enumerate(paths):
+            self.statusBar().showMessage(f"Processando {i+1} de {len(paths)} imagens...")
+            QApplication.processEvents()
+            try:
+                pil_crop = Image.open(rec_path).convert('RGB')
+                width, height = pil_crop.size
+
+                if width != EXPECTED_PROCESSED_WIDTH or height != EXPECTED_PROCESSED_HEIGHT:
+                    error_msg = f"{os.path.basename(rec_path)} [DIMENSÕES INVÁLIDAS: {width}x{height}, esperado {EXPECTED_PROCESSED_WIDTH}x{EXPECTED_PROCESSED_HEIGHT}]"
+                    itm = QListWidgetItem(error_msg)
+                    itm.setForeground(QColor('red'))
+                    self.list_widget.addItem(itm)
+                    continue 
+
+                base_name_rec = os.path.splitext(os.path.basename(rec_path))[0]
+                ana_name = f"{base_name_rec}_analisada.png" 
+                ana_path = os.path.join(analyzed_output_subdir, ana_name) 
+                
+                pil_crop.save(ana_path) 
+
+                total = random.randint(5, 15)
+                viable = random.randint(0, total)
+                invi = total - viable
+                
+                self.analysis_items.append({
+                    'recorte': rec_path,       
+                    'analysed': ana_path,      
+                    'counts': {'total': total, 'viable': viable, 'inviable': invi},
+                    'status': None
+                })
+                self.list_widget.addItem(QListWidgetItem(os.path.basename(rec_path)))
+                valid_processed_images += 1
+            except Exception as e:
+                itm = QListWidgetItem(f"{os.path.basename(rec_path)} [ERRO AO PROCESSAR]")
+                itm.setForeground(QColor('red'))
+                self.list_widget.addItem(itm)
+                print(f"Erro ao processar imagem pré-processada {rec_path}: {e}")
+                traceback.print_exc()
+
+        self.statusBar().showMessage(f"Pronto. {valid_processed_images} imagens processadas e prontas para revisão.")
+        QApplication.restoreOverrideCursor()
+
+        if valid_processed_images == 0 and paths:
+             QMessageBox.warning(self, "Aviso", 
+                            "Nenhuma imagem pré-processada pôde ser carregada ou analisada.")
+        
+        self.analysis_stage = True 
+        
+        try:
+            self.list_widget.currentItemChanged.disconnect()
+        except TypeError: 
+            pass
+        self.list_widget.currentItemChanged.connect(self.display_selected_item)
+        
+        if self.list_widget.count() > 0:
+            first_valid_idx = -1
+            for i in range(self.list_widget.count()):
+                if '[ERRO AO PROCESSAR]' not in self.list_widget.item(i).text():
+                    first_valid_idx = i
+                    break
+            if first_valid_idx != -1:
+                self.list_widget.setCurrentRow(first_valid_idx)
+            else: 
+                self.scene_orig.clear(); self.scene_analyzed.clear()
+                self.update_details_text()
+
+        self.update_analysis_action_buttons_state()
+        self.activateWindow(); self.list_widget.setFocus()
 
     def load_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Selecionar Arquivos de Imagem", self.default_directory,
@@ -455,6 +588,7 @@ class SeedAnalyzerApp(QMainWindow):
         self.image_paths = paths
         self.image_data.clear(); self.analysis_items.clear(); self.list_widget.clear() 
         self.current_image = None
+        self.processed_files_base_dir = None
         self.image_view.setVisible(True); self.recorte_container.setVisible(False)
         
         self.btn_delimit.setVisible(True)
@@ -935,18 +1069,14 @@ class SeedAnalyzerApp(QMainWindow):
             timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
             
             base_dir = self.default_directory 
-            if self.image_paths: 
+
+            if self.processed_files_base_dir: 
+                base_dir = self.processed_files_base_dir
+            elif self.image_paths: 
                 base_dir = os.path.dirname(self.image_paths[0])
-            elif self.analysis_items: 
-                 first_recorte_path = self.analysis_items[0]['recorte']
-                 inferred_base_dir = os.path.dirname(os.path.dirname(first_recorte_path))
-                 if os.path.isdir(inferred_base_dir):
-                     base_dir = inferred_base_dir
-                 else:
-                     QMessageBox.warning(self, "Aviso de Diretório", f"Não foi possível determinar o diretório original. O relatório será salvo em: {base_dir}")
-            else:
-                QMessageBox.critical(self, "Erro", "Não foi possível determinar o diretório para salvar o relatório.")
-                return
+            elif not os.path.isdir(base_dir): 
+                 QMessageBox.critical(self, "Erro", "Não foi possível determinar um diretório válido para salvar o relatório.")
+                 return
 
             filename = os.path.join(base_dir, f"relatorio_{required_inputs['Análise']}_{timestamp}.csv")
             
