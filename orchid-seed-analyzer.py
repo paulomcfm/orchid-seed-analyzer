@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QSplitter, QTextEdit, QListWidgetItem, QGraphicsItem,
     QLineEdit
 )
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QDoubleValidator, QIntValidator
+from PyQt6.QtGui import (QPixmap, QImage, QPainter, QPen, QColor, QDoubleValidator, QIntValidator,
+                         QWheelEvent, QKeyEvent) 
 from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSizeF
 from PIL import Image
 import traceback
@@ -61,9 +62,65 @@ class ConstrainedRectItem(QGraphicsRectItem):
         QApplication.instance().restoreOverrideCursor()
         super().hoverLeaveEvent(event)
 
-class PlacementView(QGraphicsView):
-    def __init__(self, parent=None):
+class NavigableGraphicsView(QGraphicsView):
+    def __init__(self, list_widget_ref, parent=None):
         super().__init__(parent)
+        self.list_widget_ref = list_widget_ref
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
+
+    def wheelEvent(self, event: QWheelEvent):
+        if not self.list_widget_ref or self.list_widget_ref.count() == 0:
+            super().wheelEvent(event)
+            return
+
+        num_degrees = event.angleDelta().y() / 8
+        num_steps = num_degrees / 15 
+
+        current_row = self.list_widget_ref.currentRow()
+        new_row = current_row
+
+        if num_steps > 0: 
+            new_row = max(0, current_row - 1)
+        elif num_steps < 0: 
+            new_row = min(self.list_widget_ref.count() - 1, current_row + 1)
+
+        if new_row != current_row:
+            self.list_widget_ref.setCurrentRow(new_row)
+            event.accept() 
+        else:
+            event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        key = event.key()
+        processed_by_us = False
+
+        if self.list_widget_ref and self.list_widget_ref.count() > 0:
+            current_row = self.list_widget_ref.currentRow()
+            new_row = current_row
+
+            if key == Qt.Key.Key_Up:
+                new_row = max(0, current_row - 1)
+                if new_row != current_row:
+                    self.list_widget_ref.setCurrentRow(new_row)
+                event.accept()
+                processed_by_us = True
+            elif key == Qt.Key.Key_Down:
+                new_row = min(self.list_widget_ref.count() - 1, current_row + 1)
+                if new_row != current_row:
+                    self.list_widget_ref.setCurrentRow(new_row)
+                event.accept()
+                processed_by_us = True
+        
+        if not processed_by_us:
+            super().keyPressEvent(event)
+
+class PlacementView(QGraphicsView):
+    def __init__(self, list_widget_ref, parent=None): 
+        super().__init__(parent)
+        self.list_widget_ref = list_widget_ref 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.pixmap_item = None
@@ -72,6 +129,7 @@ class PlacementView(QGraphicsView):
         self.original_image_size = QSize()
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def set_image(self, pixmap_original: QPixmap):
         try:
@@ -135,6 +193,57 @@ class PlacementView(QGraphicsView):
             self.create_initial_rectangle(self.pixmap_item.boundingRect())
         self.rect_item.setPos(scaled_x, scaled_y)
 
+    def wheelEvent(self, event: QWheelEvent):
+        if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event) 
+            return
+
+        if not self.list_widget_ref or self.list_widget_ref.count() == 0:
+            super().wheelEvent(event)
+            return
+
+        num_degrees = event.angleDelta().y() / 8
+        num_steps = num_degrees / 15
+
+        current_row = self.list_widget_ref.currentRow()
+        new_row = current_row
+
+        if num_steps > 0: 
+            new_row = max(0, current_row - 1)
+        elif num_steps < 0: 
+            new_row = min(self.list_widget_ref.count() - 1, current_row + 1)
+
+        if new_row != current_row:
+            self.list_widget_ref.setCurrentRow(new_row)
+            event.accept()
+        else:
+            event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        key = event.key()
+        processed_by_us = False
+
+        if self.list_widget_ref and self.list_widget_ref.count() > 0:
+            current_row = self.list_widget_ref.currentRow()
+            new_row = current_row
+
+            if key == Qt.Key.Key_Up:
+                new_row = max(0, current_row - 1)
+                if new_row != current_row:
+                    self.list_widget_ref.setCurrentRow(new_row)
+                event.accept()
+                processed_by_us = True
+            elif key == Qt.Key.Key_Down:
+                new_row = min(self.list_widget_ref.count() - 1, current_row + 1)
+                if new_row != current_row:
+                    self.list_widget_ref.setCurrentRow(new_row)
+                event.accept()
+                processed_by_us = True
+        
+        if not processed_by_us:
+            super().keyPressEvent(event)
+
+
 class SeedAnalyzerApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -195,29 +304,28 @@ class SeedAnalyzerApp(QMainWindow):
         l_layout = QVBoxLayout(left)
         self.btn_load_files = QPushButton("Selecionar Arquivos")
         self.btn_load_folder = QPushButton("Selecionar Pasta")
-        self.list_widget = QListWidget()
+        self.list_widget = QListWidget() 
         for w in (self.btn_load_files, self.btn_load_folder, QLabel("Itens:"), self.list_widget):
             l_layout.addWidget(w)
         splitter.addWidget(left)
 
         center = QWidget()
         c_layout = QVBoxLayout(center)
-        self.image_view = PlacementView()
+        self.image_view = PlacementView(self.list_widget) 
         c_layout.addWidget(self.image_view, 3)
         self.recorte_container = QWidget()
         rc_layout = QHBoxLayout(self.recorte_container)
-        self.view_orig = QGraphicsView()
-        self.view_orig.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.view_orig.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.view_orig = NavigableGraphicsView(self.list_widget) 
         self.scene_orig = QGraphicsScene(self.view_orig)
         self.view_orig.setScene(self.scene_orig)
         rc_layout.addWidget(self.view_orig, 1)
-        self.view_analyzed = QGraphicsView()
-        self.view_analyzed.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.view_analyzed.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.view_analyzed = NavigableGraphicsView(self.list_widget) 
         self.scene_analyzed = QGraphicsScene(self.view_analyzed)
         self.view_analyzed.setScene(self.scene_analyzed)
         rc_layout.addWidget(self.view_analyzed, 1)
+        
         self.recorte_container.setVisible(False)
         c_layout.addWidget(self.recorte_container, 2)
         splitter.addWidget(center)
@@ -283,31 +391,37 @@ class SeedAnalyzerApp(QMainWindow):
 
         self.statusBar().showMessage("Pronto.")
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event: QKeyEvent): 
         if (event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter) and \
            not self.analysis_stage and self.btn_delimit.isVisible() and self.btn_delimit.isEnabled():
             self.confirm_delimit()
+            event.accept()
         elif event.key() == Qt.Key.Key_D and event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
              not self.analysis_stage and self.btn_delimit.isVisible() and self.btn_delimit.isEnabled():
             self.confirm_delimit()
+            event.accept()
         elif event.key() == Qt.Key.Key_C and event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
              self.analysis_stage and self.btn_confirm.isVisible() and self.btn_confirm.isEnabled():
             self.confirm_current_analysis()
+            event.accept()
         elif event.key() == Qt.Key.Key_R and event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
              self.analysis_stage and self.btn_remove.isVisible() and self.btn_remove.isEnabled():
             self.remove_current_analysis()
+            event.accept()
         else:
             super().keyPressEvent(event)
 
     def update_details_text(self):
         if not self.analysis_stage:
-            if not getattr(self, 'current_image', None): return
+            if not getattr(self, 'current_image', None) or not self.list_widget.currentItem(): 
+                self.details_text.setText("Nenhum arquivo selecionado ou lista vazia.")
+                return
             data = self.image_data.get(self.current_image, {})
             basename = os.path.basename(self.current_image)
             roi = data.get('roi')
             txt = f"Arquivo: {basename}\nROI: x={roi[0]:.1f}, y={roi[1]:.1f}, w={roi[2]}, h={roi[3]}" if roi else f"Arquivo: {basename}\nROI não definida"
             self.details_text.setText(txt)
-        else: # Analysis stage
+        else: 
             idx = self.list_widget.currentRow()
             if idx < 0 or not self.analysis_items or idx >= len(self.analysis_items):
                 self.details_text.setText("Nenhum item selecionado ou lista de análise vazia.")
@@ -319,7 +433,6 @@ class SeedAnalyzerApp(QMainWindow):
                 f"Arquivo: {os.path.basename(item['recorte'])}\n"
                 f"Total sementes: {cnt['total']}\nViáveis: {cnt['viable']}\nInviáveis: {cnt['inviable']}\nStatus: {status}"
             )
-
 
     def load_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Selecionar Arquivos de Imagem", self.default_directory,
@@ -340,13 +453,14 @@ class SeedAnalyzerApp(QMainWindow):
         self.analysis_stage = False
         self.input_analise.clear(); self.input_especie.clear(); self.input_temp.clear(); self.input_tempo.clear()
         self.image_paths = paths
-        self.image_data.clear(); self.analysis_items.clear(); self.list_widget.clear(); self.details_text.clear()
+        self.image_data.clear(); self.analysis_items.clear(); self.list_widget.clear() 
         self.current_image = None
         self.image_view.setVisible(True); self.recorte_container.setVisible(False)
         
         self.btn_delimit.setVisible(True)
+        self.btn_delimit.setEnabled(False) 
         self.btn_analyze.setVisible(False)
-        self.btn_analyze.setEnabled(False) # Ensure analyze button is disabled initially
+        self.btn_analyze.setEnabled(False) 
         
         buttons_to_hide = [
             self.btn_confirm, self.btn_remove, self.btn_confirm_all, self.btn_remove_all,
@@ -371,7 +485,7 @@ class SeedAnalyzerApp(QMainWindow):
                     itm.setForeground(QColor('red'))
                     self.list_widget.addItem(itm)
                     continue
-                self.image_data[path] = {'pil': pil, 'roi': None, 'pixmap_display': None} # Added pixmap_display
+                self.image_data[path] = {'pil': pil, 'roi': None, 'pixmap_display': None}
                 self.list_widget.addItem(QListWidgetItem(os.path.basename(path)))
                 valid_images += 1
             except Exception as e:
@@ -388,7 +502,8 @@ class SeedAnalyzerApp(QMainWindow):
              QMessageBox.warning(self, "Aviso", 
                             "Nenhuma imagem válida foi carregada. Verifique se as imagens atendem ao tamanho mínimo de " +
                             f"{TARGET_RECT_WIDTH_ORIGINAL}x{TARGET_RECT_HEIGHT_ORIGINAL} pixels ou se não estão corrompidas.")
-        elif valid_images > 0:
+        
+        if self.list_widget.count() > 0:
             first_valid_idx = -1
             for i in range(self.list_widget.count()):
                 item_text = self.list_widget.item(i).text()
@@ -397,10 +512,18 @@ class SeedAnalyzerApp(QMainWindow):
                     break
             if first_valid_idx != -1:
                  self.list_widget.setCurrentRow(first_valid_idx)
-            else: # No valid images to select, clear display
-                self.image_view._scene.clear()
-                self.details_text.setText("Nenhuma imagem válida para exibir.")
+            else: 
+                self.image_view._scene.clear() 
+                self.scene_orig.clear()      
+                self.scene_analyzed.clear()  
                 self.btn_delimit.setEnabled(False)
+                self.update_details_text() 
+        else: 
+            self.image_view._scene.clear()
+            self.scene_orig.clear()
+            self.scene_analyzed.clear()
+            self.btn_delimit.setEnabled(False)
+            self.update_details_text()
 
         self.update_analysis_action_buttons_state() 
 
@@ -411,18 +534,22 @@ class SeedAnalyzerApp(QMainWindow):
             else:
                 self.image_view._scene.clear()
                 self.btn_delimit.setEnabled(False)
-            self.update_details_text() # Will show appropriate message for no selection
+            self.update_details_text() 
             self.update_analysis_action_buttons_state()
             return
 
         name = current.text()
         if not self.analysis_stage:
+            self.btn_delimit.setEnabled(False) 
             if '[ERRO]' in name or '[TAMANHO INSUFICIENTE]' in name:
                 self.image_view._scene.clear()
-                self.btn_delimit.setEnabled(False)
             else:
                 path = next((p for p in self.image_data if os.path.basename(p) == name.replace(' [D]','')), None)
-                if not path: return
+                if not path: 
+                    self.image_view._scene.clear() 
+                    self.update_details_text()
+                    self.update_analysis_action_buttons_state()
+                    return
 
                 self.current_image = path
                 data = self.image_data[path]
@@ -439,7 +566,7 @@ class SeedAnalyzerApp(QMainWindow):
                 roi_data = data.get('roi')
                 if roi_data:
                     self.image_view.show_existing_roi(roi_data)
-                else: # Reset rect if no ROI
+                else: 
                     if self.image_view.pixmap_item:
                          self.image_view.create_initial_rectangle(self.image_view.pixmap_item.boundingRect())
 
@@ -453,7 +580,7 @@ class SeedAnalyzerApp(QMainWindow):
                 self.view_orig.fitInView(self.scene_orig.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
                 self.scene_analyzed.clear(); self.scene_analyzed.addPixmap(QPixmap(item['analysed']))
                 self.view_analyzed.fitInView(self.scene_analyzed.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-            else: # Should not happen if list is populated and selection is valid
+            else: 
                 self.scene_orig.clear(); self.scene_analyzed.clear()
         
         self.update_details_text()
@@ -461,21 +588,34 @@ class SeedAnalyzerApp(QMainWindow):
 
 
     def confirm_delimit(self):
-        if not self.current_image: return
+        current_list_item = self.list_widget.currentItem()
+        if not self.current_image or not current_list_item:
+            if not self.current_image:
+                 QMessageBox.warning(self, "Aviso", "Nenhuma imagem principal selecionada para delimitar.")
+            return
+
+        current_text = current_list_item.text()
+        if '[ERRO]' in current_text or '[TAMANHO INSUFICIENTE]' in current_text:
+            QMessageBox.warning(self, "Aviso", "Não é possível delimitar uma imagem com erro ou tamanho insuficiente.")
+            return
+
         roi = self.image_view.get_roi_original_coords()
         if not roi:
             QMessageBox.warning(self, "Aviso", "Não foi possível obter coordenadas.")
             return
+            
         self.image_data[self.current_image]['roi'] = roi
-        itm = self.list_widget.currentItem()
-        if itm and not itm.text().endswith(' [D]'):
-            base_name = itm.text().replace(' [ERRO]', '').replace(' [TAMANHO INSUFICIENTE]', '')
-            itm.setText(base_name + ' [D]')
         
-        all_valid_delimited = True
+        base_name = os.path.basename(self.current_image)
+        if not current_list_item.text().endswith(' [D]'):
+            current_list_item.setText(base_name + ' [D]')
+        
+        all_valid_delimited_so_far = True 
         has_any_valid_image = False
         next_undelimited_row = -1
+        current_row_idx = self.list_widget.currentRow()
 
+        # Check if all valid images are delimited to enable analyze button
         for i in range(self.list_widget.count()):
             list_item = self.list_widget.item(i)
             item_text = list_item.text()
@@ -483,13 +623,15 @@ class SeedAnalyzerApp(QMainWindow):
             
             if not is_error_or_small:
                 has_any_valid_image = True
-                path_key = next((p for p in self.image_data if os.path.basename(p) in item_text), None)
-                if path_key and self.image_data[path_key].get('roi') is None:
-                    all_valid_delimited = False
-                    if next_undelimited_row == -1: # Find first undelimited
-                        next_undelimited_row = i
-        
-        if has_any_valid_image and all_valid_delimited:
+                current_item_base_name = item_text.split(" [")[0]
+                
+                path_key_found = next((p_key for p_key in self.image_data 
+                                       if os.path.basename(p_key) == current_item_base_name), None)
+                
+                if path_key_found and self.image_data[path_key_found].get('roi') is None:
+                    all_valid_delimited_so_far = False 
+
+        if has_any_valid_image and all_valid_delimited_so_far:
             self.btn_analyze.setVisible(True)
             self.btn_analyze.setEnabled(True)
             QMessageBox.information(self, "Info", "Todas as imagens válidas foram delimitadas. Pronto para analisar.")
@@ -497,10 +639,35 @@ class SeedAnalyzerApp(QMainWindow):
             self.btn_analyze.setVisible(False)
             self.btn_analyze.setEnabled(False)
 
+        # Find next undelimited valid image, starting from AFTER current one
+        for i in range(current_row_idx + 1, self.list_widget.count()):
+            list_item = self.list_widget.item(i)
+            item_text = list_item.text()
+            is_error_or_small = '[ERRO]' in item_text or '[TAMANHO INSUFICIENTE]' in item_text
+            current_item_base_name = item_text.split(" [")[0] 
+            path_key_next = next((p_key for p_key in self.image_data 
+                                  if os.path.basename(p_key) == current_item_base_name), None)
+
+            if not is_error_or_small and path_key_next and self.image_data[path_key_next].get('roi') is None:
+                next_undelimited_row = i
+                break
+        
+        # If not found after current, search from beginning UP TO current one
+        if next_undelimited_row == -1:
+            for i in range(current_row_idx): 
+                list_item = self.list_widget.item(i)
+                item_text = list_item.text()
+                is_error_or_small = '[ERRO]' in item_text or '[TAMANHO INSUFICIENTE]' in item_text
+                current_item_base_name = item_text.split(" [")[0]
+                path_key_next = next((p_key for p_key in self.image_data 
+                                      if os.path.basename(p_key) == current_item_base_name), None)
+                if not is_error_or_small and path_key_next and self.image_data[path_key_next].get('roi') is None:
+                    next_undelimited_row = i
+                    break
+        
         if next_undelimited_row != -1:
             self.list_widget.setCurrentRow(next_undelimited_row)
-        elif not all_valid_delimited and has_any_valid_image: # All valid images are delimited, but some might have been skipped
-             pass # Stay on current or let user pick
+        
         self.update_details_text()
 
 
@@ -513,10 +680,11 @@ class SeedAnalyzerApp(QMainWindow):
 
     def update_analysis_action_buttons_state(self):
         if not self.analysis_stage or not self.analysis_items:
+            is_enabled = False
             for btn_name in ['btn_confirm', 'btn_remove', 'btn_confirm_all', 'btn_remove_all', 
                              'btn_confirm_remaining', 'btn_remove_remaining', 'btn_confirm_report']:
                 if hasattr(self, btn_name):
-                    getattr(self, btn_name).setEnabled(False)
+                    getattr(self, btn_name).setEnabled(is_enabled)
             return
 
         has_unprocessed_items = any(item['status'] is None for item in self.analysis_items)
@@ -528,7 +696,6 @@ class SeedAnalyzerApp(QMainWindow):
         self.btn_remove_all.setEnabled(bool(self.analysis_items))
 
         current_row = self.list_widget.currentRow()
-        # CHANGED: Enable confirm/remove if a valid item is selected, regardless of its current status
         can_process_current = (0 <= current_row < len(self.analysis_items))
             
         self.btn_confirm.setEnabled(can_process_current)
@@ -538,26 +705,26 @@ class SeedAnalyzerApp(QMainWindow):
 
     def analyze_images(self):
         valid_image_data_for_analysis = {}
-        original_paths_for_analysis = [] # Keep track of original paths for base_dir
+        original_paths_for_analysis = [] 
 
         for path, data in self.image_data.items():
-            is_valid_for_analysis = True
+            is_valid_for_analysis_flag = True
             list_item_text_found = ""
+            
+            path_basename = os.path.basename(path)
             for i in range(self.list_widget.count()):
                 item_text_iter = self.list_widget.item(i).text()
-                # Match based on basename being part of the list_widget item text
-                # This is slightly fragile if basenames are substrings of others, but common for this setup
-                if os.path.basename(path) in item_text_iter:
+                if path_basename == item_text_iter.split(" [")[0]: 
                     list_item_text_found = item_text_iter
                     break
             
             if '[ERRO]' in list_item_text_found or '[TAMANHO INSUFICIENTE]' in list_item_text_found:
-                is_valid_for_analysis = False
+                is_valid_for_analysis_flag = False
             
-            if data['roi'] is None: # Must have ROI
-                is_valid_for_analysis = False
+            if data.get('roi') is None: 
+                is_valid_for_analysis_flag = False
 
-            if is_valid_for_analysis:
+            if is_valid_for_analysis_flag:
                 valid_image_data_for_analysis[path] = data
                 original_paths_for_analysis.append(path)
         
@@ -568,7 +735,6 @@ class SeedAnalyzerApp(QMainWindow):
         self.statusBar().showMessage("Preparando análise...")
         QApplication.processEvents()
 
-        # Use the directory of the first original image that will be processed
         base = os.path.dirname(original_paths_for_analysis[0]) 
         out_dir = os.path.join(base, 'imagens_recortadas')
         os.makedirs(out_dir, exist_ok=True)
@@ -576,7 +742,6 @@ class SeedAnalyzerApp(QMainWindow):
 
         for path, data in valid_image_data_for_analysis.items():
             base_file = os.path.basename(path)
-            # ... (rest of the cropping and analysis logic remains the same)
             ox, oy, ow, oh = map(int, data['roi'])
             tile_w = ow // TILE_COLS
             tile_h = oh // TILE_ROWS
@@ -600,7 +765,7 @@ class SeedAnalyzerApp(QMainWindow):
 
                 ana_name = f"{base_name_no_ext}_{idx+1}_analisada.png"
                 ana_path = os.path.join(out_dir, ana_name)
-                crop.save(ana_path) # Placeholder analysis
+                crop.save(ana_path) 
                 total = random.randint(5, 15)
                 viable = random.randint(0, total)
                 invi = total - viable
@@ -610,7 +775,6 @@ class SeedAnalyzerApp(QMainWindow):
                     'counts': {'total': total, 'viable': viable, 'inviable': invi},
                     'status': None
                 })
-
 
         self.statusBar().showMessage("Pronto.")
         QApplication.processEvents()
@@ -641,7 +805,7 @@ class SeedAnalyzerApp(QMainWindow):
             self.list_widget.setCurrentRow(0)
         else: 
             self.scene_orig.clear(); self.scene_analyzed.clear()
-            self.update_details_text() # Will show no items
+            self.update_details_text() 
 
         self.update_analysis_action_buttons_state()
         self.activateWindow(); self.list_widget.setFocus()
@@ -650,18 +814,15 @@ class SeedAnalyzerApp(QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0 or idx >= len(self.analysis_items): return
         
-        # Update status even if it's already 'Confirmado'
         self.analysis_items[idx]['status'] = 'Confirmado'
         itm = self.list_widget.item(idx)
         base_name = os.path.basename(self.analysis_items[idx]['recorte'])
-        # Ensure text doesn't duplicate status markers
-        if " [R]" in itm.text():
-            itm.setText(itm.text().replace(" [R]", " [C]"))
-        elif not itm.text().endswith(" [C]"):
-            itm.setText(f"{base_name} [C]")
+        new_text = f"{base_name} [C]"
+        if itm.text() != new_text: 
+            itm.setText(new_text)
         
-        self.update_details_text() # Update details to reflect change
-        self.next_analysis() # Try to move to next *unprocessed*
+        self.update_details_text() 
+        self.next_analysis() 
         self.update_analysis_action_buttons_state()
 
 
@@ -669,35 +830,30 @@ class SeedAnalyzerApp(QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0 or idx >= len(self.analysis_items): return
 
-        # Update status even if it's already 'Removido'
         self.analysis_items[idx]['status'] = 'Removido'
         itm = self.list_widget.item(idx)
         base_name = os.path.basename(self.analysis_items[idx]['recorte'])
-        # Ensure text doesn't duplicate status markers
-        if " [C]" in itm.text():
-            itm.setText(itm.text().replace(" [C]", " [R]"))
-        elif not itm.text().endswith(" [R]"):
-             itm.setText(f"{base_name} [R]")
+        new_text = f"{base_name} [R]"
+        if itm.text() != new_text: 
+            itm.setText(new_text)
 
-        self.update_details_text() # Update details to reflect change
-        self.next_analysis() # Try to move to next *unprocessed*
+        self.update_details_text() 
+        self.next_analysis() 
         self.update_analysis_action_buttons_state()
 
-    def next_analysis(self):
+    def next_analysis(self): # Used by confirm/remove in analysis stage
         current_idx = self.list_widget.currentRow()
-        # Try to find the next item with status None, starting after current
+        if len(self.analysis_items) == 0: return 
+
         for i in range(current_idx + 1, len(self.analysis_items)):
             if self.analysis_items[i]['status'] is None:
                 self.list_widget.setCurrentRow(i)
                 return
-        # If not found after current, try from the beginning
-        for i in range(current_idx + 1): # up to and including current_idx
+        for i in range(current_idx): 
             if self.analysis_items[i]['status'] is None:
                 self.list_widget.setCurrentRow(i)
                 return
         
-        # If still no unprocessed item found, it means all are processed
-        # No explicit message here, as user can still select and change
         self.update_analysis_action_buttons_state()
 
 
@@ -707,9 +863,9 @@ class SeedAnalyzerApp(QMainWindow):
             it['status'] = 'Confirmado'
             list_item = self.list_widget.item(i)
             base_name = os.path.basename(it['recorte'])
-            list_item.setText(f"{base_name} [C]") # Overwrite previous status
+            list_item.setText(f"{base_name} [C]") 
         self.update_analysis_action_buttons_state()
-        self.update_details_text() # Update for current selection
+        self.update_details_text() 
 
     def remove_all(self):
         if not self.analysis_items: return
@@ -717,9 +873,9 @@ class SeedAnalyzerApp(QMainWindow):
             it['status'] = 'Removido'
             list_item = self.list_widget.item(i)
             base_name = os.path.basename(it['recorte'])
-            list_item.setText(f"{base_name} [R]") # Overwrite previous status
+            list_item.setText(f"{base_name} [R]") 
         self.update_analysis_action_buttons_state()
-        self.update_details_text() # Update for current selection
+        self.update_details_text() 
 
     def confirm_remaining(self):
         if not self.analysis_items: return
@@ -778,37 +934,19 @@ class SeedAnalyzerApp(QMainWindow):
                 
             timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
             
-            original_paths_for_report = []
-            for path, data in self.image_data.items(): # Check original image_data for paths
-                 is_valid_for_report_base_dir = True
-                 # This logic to find the item might be redundant if self.image_paths is reliable
-                 list_item_text_found = ""
-                 for i in range(self.list_widget.count()): # This list_widget is now for analysis_items
-                     # We need a more robust way to link back or use a stored original path list
-                     pass # For now, assume self.image_paths is correctly populated from load.
-                 
-                 # Simplified: use self.image_paths if available and populated.
-                 # This assumes self.image_paths contains paths that led to the current analysis_items.
-                 if self.image_paths: # If self.image_paths was populated
-                     original_paths_for_report = self.image_paths
-                     break # Found a source for paths
-
-            if not original_paths_for_report:
-                 # Fallback if self.image_paths is empty, try to get from analysis_items (less ideal)
-                 if self.analysis_items:
-                     first_recorte_path = self.analysis_items[0]['recorte']
-                     # Try to infer base_dir from recorte path (e.g., ../ from 'imagens_recortadas')
-                     base_dir_inferred = os.path.dirname(os.path.dirname(first_recorte_path))
-                     if os.path.isdir(base_dir_inferred):
-                         base_dir = base_dir_inferred
-                     else: # Last resort: use default_directory
-                         base_dir = self.default_directory
-                         QMessageBox.warning(self, "Aviso de Diretório", f"Não foi possível determinar o diretório original das imagens. O relatório será salvo em: {base_dir}")
-                 else: # No analysis_items either
-                    QMessageBox.critical(self, "Erro", "Não foi possível determinar o diretório para salvar o relatório.")
-                    return
+            base_dir = self.default_directory 
+            if self.image_paths: 
+                base_dir = os.path.dirname(self.image_paths[0])
+            elif self.analysis_items: 
+                 first_recorte_path = self.analysis_items[0]['recorte']
+                 inferred_base_dir = os.path.dirname(os.path.dirname(first_recorte_path))
+                 if os.path.isdir(inferred_base_dir):
+                     base_dir = inferred_base_dir
+                 else:
+                     QMessageBox.warning(self, "Aviso de Diretório", f"Não foi possível determinar o diretório original. O relatório será salvo em: {base_dir}")
             else:
-                base_dir = os.path.dirname(original_paths_for_report[0])
+                QMessageBox.critical(self, "Erro", "Não foi possível determinar o diretório para salvar o relatório.")
+                return
 
             filename = os.path.join(base_dir, f"relatorio_{required_inputs['Análise']}_{timestamp}.csv")
             
@@ -845,12 +983,14 @@ class SeedAnalyzerApp(QMainWindow):
         <p><b>Como utilizar o programa:</b></p>
         <ol>
         <li><b>Carregamento de imagens:</b> Clique em "Selecionar Arquivos" ou "Selecionar Pasta". Imagens muito pequenas ou corrompidas serão marcadas.</li>
-        <li><b>Delimitar imagem:</b> Posicione o retângulo vermelho sobre a área desejada e clique em "Delimitar [D]" (ou use Enter/Ctrl+D). Repita para todas as imagens válidas.</li>
+        <li><b>Navegação:</b> Use as teclas de seta (Cima/Baixo) ou o scroll do mouse sobre a área da imagem para navegar entre os itens da lista.</li>
+        <li><b>Delimitar imagem:</b> Posicione o retângulo vermelho sobre a área desejada e clique em "Delimitar [D]" (ou use Enter/Ctrl+D). Repita para todas as imagens válidas. O programa tentará selecionar a próxima imagem não delimitada.</li>
         <li><b>Analisar imagens:</b> Após delimitar todas as imagens válidas, clique em "Analisar Imagens". As imagens serão recortadas em seções.</li>
-        <li><b>Confirmar/Remover análises:</b> Selecione uma seção e clique em "Confirmar [C]" ou "Remover [R]" (ou use Ctrl+C/Ctrl+R) para marcar/alterar seu status.
+        <li><b>Confirmar/Remover análises:</b> Selecione uma seção e clique em "Confirmar [C]" ou "Remover [R]" (ou use Ctrl+C/Ctrl+R) para marcar/alterar seu status. O programa tentará selecionar a próxima seção não processada.
         Use "Confirmar Todas", "Remover Todas", "Confirmar Restantes" ou "Remover Restantes" para ações em lote.</li>
         <li><b>Gerar relatório:</b> Após processar todas as seções, preencha os campos obrigatórios (Análise, Espécie, etc.) e clique em "Confirmar e Gerar Relatório".</li>
         </ol>
+        <p><b>Zoom:</b> Na fase de delimitação, use Ctrl + Scroll do mouse sobre a imagem grande para aplicar zoom.</p>
         <p><b>Campos obrigatórios para o relatório:</b> Análise, Espécie, Temp. Armazenamento (°C), Tempo (h).</p>
         <p><b>Atalhos de teclado:</b> Enter/Ctrl+D (Delimitar), Ctrl+C (Confirmar), Ctrl+R (Remover).</p>
         """
