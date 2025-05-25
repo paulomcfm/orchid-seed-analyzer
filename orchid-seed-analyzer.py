@@ -17,6 +17,8 @@ from PIL import Image
 import traceback
 import csv
 from datetime import datetime
+from ultralytics import YOLO
+import cv2
 
 # --- Configuration ---
 TARGET_RECT_WIDTH_ORIGINAL = 5676
@@ -258,6 +260,17 @@ class SeedAnalyzerApp(QMainWindow):
         self.processed_files_base_dir = None
         docs = "C:\\Documentos"
         self.default_directory = docs if os.path.isdir(docs) else os.path.expanduser("~")
+        self.yolo_model = None
+        self.model_path = "model_weights/best.pt" 
+        try:
+            if os.path.exists(self.model_path):
+                self.yolo_model = YOLO(self.model_path)
+            else:
+                print(f"ERRO: Arquivo do modelo YOLO não encontrado em: {self.model_path}")
+        except Exception as e:
+            print(f"Erro ao carregar o modelo YOLO: {e}")
+            QMessageBox.critical(self, "Erro de Modelo", f"Não foi possível carregar o modelo YOLO de '{self.model_path}'. Verifique o caminho e a instalação do Ultralytics.\n\nErro: {e}")
+            self.yolo_model = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -442,6 +455,7 @@ class SeedAnalyzerApp(QMainWindow):
                 f"Arquivo: {os.path.basename(item['recorte'])}\n"
                 f"Total sementes: {cnt['total']}\nViáveis: {cnt['viable']}\nInviáveis: {cnt['inviable']}\nStatus: {status}"
             )
+
     def load_processed_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Selecionar Arquivos Processados", self.default_directory,
                                                 "Imagens (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
@@ -461,18 +475,88 @@ class SeedAnalyzerApp(QMainWindow):
         self.analysis_stage = False 
         self.input_analise.clear(); self.input_especie.clear(); self.input_temp.clear(); self.input_tempo.clear()
         self.image_paths = [] 
-        self.image_data.clear()
+        self.image_data.clear() 
         self.analysis_items.clear()
         self.list_widget.clear()
         self.details_text.clear()
-        self.current_image = None
-        self.processed_files_base_dir = None
+        self.current_image = None 
+        self.processed_files_base_dir = None 
+
+        if not paths:
+            self.statusBar().showMessage("Nenhum arquivo processado selecionado.")
+            self.update_analysis_action_buttons_state()
+            return
+
+        if not self.yolo_model:
+             QMessageBox.critical(self, "Erro de Modelo", "O modelo YOLO não está carregado. A análise não pode prosseguir.")
+             self.statusBar().showMessage("Falha ao carregar: Modelo YOLO não disponível.")
+             self.image_view.setVisible(True) 
+             self.recorte_container.setVisible(False)
+             self.btn_delimit.setVisible(True) 
+             self.btn_delimit.setEnabled(False)
+             self.btn_analyze.setVisible(False)
+             for btn_name in ['btn_confirm_all', 'btn_remove_all', 'btn_confirm_remaining', 
+                               'btn_remove_remaining', 'btn_confirm', 'btn_remove', 'btn_confirm_report']:
+                 if hasattr(self, btn_name): getattr(self, btn_name).setVisible(False)
+             self.update_analysis_action_buttons_state()
+             return
+
+        self.processed_files_base_dir = os.path.dirname(paths[0]) 
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(f"Validando 0 de {len(paths)} imagens processadas...")
+        QApplication.processEvents()
+
+        validated_paths_for_yolo = []
+        for i, rec_path_validate in enumerate(paths):
+            self.statusBar().showMessage(f"Validando {i+1} de {len(paths)} imagens...")
+            QApplication.processEvents()
+            try:
+                with Image.open(rec_path_validate) as img_validate:
+                    width, height = img_validate.size
+                if width != EXPECTED_PROCESSED_WIDTH or height != EXPECTED_PROCESSED_HEIGHT:
+                    error_msg = f"{os.path.basename(rec_path_validate)} [DIMENSÕES INVÁLIDAS: {width}x{height}, esperado {EXPECTED_PROCESSED_WIDTH}x{EXPECTED_PROCESSED_HEIGHT}]"
+                    itm = QListWidgetItem(error_msg)
+                    itm.setForeground(QColor('red'))
+                    self.list_widget.addItem(itm) 
+                    print(error_msg)
+                else:
+                    validated_paths_for_yolo.append(rec_path_validate) 
+            except Exception as e:
+                error_msg = f"{os.path.basename(rec_path_validate)} [ERRO AO ABRIR/VALIDAR]"
+                itm = QListWidgetItem(error_msg)
+                itm.setForeground(QColor('red'))
+                self.list_widget.addItem(itm)
+                print(f"Erro ao validar {rec_path_validate}: {e}")
+                traceback.print_exc()
+        
+        if not validated_paths_for_yolo:
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage("Nenhuma imagem processada válida encontrada após validação de dimensões.")
+            if self.list_widget.count() > 0:
+                self.list_widget.setCurrentRow(0) 
+            else: 
+                self.update_details_text()
+            
+            self.analysis_stage = True 
+            self.image_view.setVisible(False) 
+            self.recorte_container.setVisible(True)
+            self.btn_delimit.setVisible(False)
+            self.btn_analyze.setVisible(False)
+            buttons_to_show = [
+                self.btn_confirm_all, self.btn_remove_all,
+                self.btn_confirm_remaining, self.btn_remove_remaining, 
+                self.btn_confirm, self.btn_remove, self.btn_confirm_report
+            ]
+            for btn in buttons_to_show:
+                btn.setVisible(True) 
+            self.update_analysis_action_buttons_state() 
+            return
 
         self.image_view.setVisible(False)
         self.recorte_container.setVisible(True)
         self.btn_delimit.setVisible(False)
-        self.btn_analyze.setVisible(False) 
-        
+        self.btn_analyze.setVisible(False)
         buttons_to_show = [
             self.btn_confirm_all, self.btn_remove_all,
             self.btn_confirm_remaining, self.btn_remove_remaining, 
@@ -480,69 +564,47 @@ class SeedAnalyzerApp(QMainWindow):
         ]
         for btn in buttons_to_show:
             btn.setVisible(True)
+
+        yolo_analyzed_output_dir = os.path.join(self.processed_files_base_dir, 'imagens_processadas_analisadas')
+        os.makedirs(yolo_analyzed_output_dir, exist_ok=True)
         
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        self.statusBar().showMessage(f"Carregando 0 de {len(paths)} imagens processadas...")
+        self.statusBar().showMessage(f"Iniciando análise YOLO em 0 de {len(validated_paths_for_yolo)} imagens...")
         QApplication.processEvents()
-
-        valid_processed_images = 0
         
-        if not paths:
-            QApplication.restoreOverrideCursor()
-            self.statusBar().showMessage("Nenhum arquivo processado selecionado.")
-            return
+        self.list_widget.clear() 
+        self.analysis_items = [] 
 
-        self.processed_files_base_dir = os.path.dirname(paths[0])
-
-        base_output_dir_for_analysis = os.path.dirname(paths[0])
-        analyzed_output_subdir = os.path.join(base_output_dir_for_analysis, 'imagens_analisadas_das_processadas')
-        os.makedirs(analyzed_output_subdir, exist_ok=True)
-
-        for i, rec_path in enumerate(paths):
-            self.statusBar().showMessage(f"Processando {i+1} de {len(paths)} imagens...")
+        processed_yolo_count = 0
+        for i, rec_path in enumerate(validated_paths_for_yolo): 
+            self.statusBar().showMessage(f"Analisando com YOLO {i+1} de {len(validated_paths_for_yolo)} imagens...")
             QApplication.processEvents()
             try:
-                pil_crop = Image.open(rec_path).convert('RGB')
-                width, height = pil_crop.size
-
-                if width != EXPECTED_PROCESSED_WIDTH or height != EXPECTED_PROCESSED_HEIGHT:
-                    error_msg = f"{os.path.basename(rec_path)} [DIMENSÕES INVÁLIDAS: {width}x{height}, esperado {EXPECTED_PROCESSED_WIDTH}x{EXPECTED_PROCESSED_HEIGHT}]"
-                    itm = QListWidgetItem(error_msg)
-                    itm.setForeground(QColor('red'))
-                    self.list_widget.addItem(itm)
-                    continue 
-
-                base_name_rec = os.path.splitext(os.path.basename(rec_path))[0]
-                ana_name = f"{base_name_rec}_analisada.png" 
-                ana_path = os.path.join(analyzed_output_subdir, ana_name) 
-                
-                pil_crop.save(ana_path) 
-
-                total = random.randint(5, 15)
-                viable = random.randint(0, total)
-                invi = total - viable
+                analyzed_yolo_img_path, counts = self.perform_yolo_analysis(rec_path, yolo_analyzed_output_dir)
                 
                 self.analysis_items.append({
-                    'recorte': rec_path,       
-                    'analysed': ana_path,      
-                    'counts': {'total': total, 'viable': viable, 'inviable': invi},
-                    'status': None
+                    'recorte': rec_path,                 
+                    'analysed': analyzed_yolo_img_path,  
+                    'counts': counts,
+                    'status': None 
                 })
-                self.list_widget.addItem(QListWidgetItem(os.path.basename(rec_path)))
-                valid_processed_images += 1
-            except Exception as e:
-                itm = QListWidgetItem(f"{os.path.basename(rec_path)} [ERRO AO PROCESSAR]")
-                itm.setForeground(QColor('red'))
+                self.list_widget.addItem(QListWidgetItem(os.path.basename(rec_path))) 
+                processed_yolo_count += 1
+            except Exception as e: 
+                error_msg_yolo = f"{os.path.basename(rec_path)} [ERRO NA ANÁLISE YOLO]"
+                itm = QListWidgetItem(error_msg_yolo)
+                itm.setForeground(QColor('magenta')) 
                 self.list_widget.addItem(itm)
-                print(f"Erro ao processar imagem pré-processada {rec_path}: {e}")
+                self.analysis_items.append({
+                    'recorte': rec_path, 
+                    'analysed': rec_path,
+                    'counts': {'total': 0, 'viable': 0, 'inviable': 0},
+                    'status': 'Erro na Análise YOLO'
+                })
+                print(f"Erro durante análise YOLO da imagem processada {rec_path}: {e}")
                 traceback.print_exc()
 
-        self.statusBar().showMessage(f"Pronto. {valid_processed_images} imagens processadas e prontas para revisão.")
         QApplication.restoreOverrideCursor()
-
-        if valid_processed_images == 0 and paths:
-             QMessageBox.warning(self, "Aviso", 
-                            "Nenhuma imagem pré-processada pôde ser carregada ou analisada.")
+        self.statusBar().showMessage(f"Análise YOLO concluída. {processed_yolo_count} imagens prontas para revisão.")
         
         self.analysis_stage = True 
         
@@ -553,16 +615,21 @@ class SeedAnalyzerApp(QMainWindow):
         self.list_widget.currentItemChanged.connect(self.display_selected_item)
         
         if self.list_widget.count() > 0:
-            first_valid_idx = -1
-            for i in range(self.list_widget.count()):
-                if '[ERRO AO PROCESSAR]' not in self.list_widget.item(i).text():
-                    first_valid_idx = i
+            first_selectable_idx = -1
+            for item_idx in range(self.list_widget.count()):
+                if item_idx < len(self.analysis_items) and \
+                   self.analysis_items[item_idx].get('status') not in ['Erro na Análise YOLO', 'Erro ao Abrir/Validar']:
+                    first_selectable_idx = item_idx
                     break
-            if first_valid_idx != -1:
-                self.list_widget.setCurrentRow(first_valid_idx)
-            else: 
-                self.scene_orig.clear(); self.scene_analyzed.clear()
-                self.update_details_text()
+            
+            if first_selectable_idx != -1:
+                self.list_widget.setCurrentRow(first_selectable_idx)
+            elif self.list_widget.count() > 0:
+                self.list_widget.setCurrentRow(0)
+        else: 
+            self.scene_orig.clear(); self.scene_analyzed.clear()
+            self.update_details_text()
+
 
         self.update_analysis_action_buttons_state()
         self.activateWindow(); self.list_widget.setFocus()
@@ -837,6 +904,62 @@ class SeedAnalyzerApp(QMainWindow):
         
         self.update_report_button_state()
 
+    def perform_yolo_analysis(self, image_path_to_analyze, output_dir_for_analyzed_image):
+        if not self.yolo_model:
+            print("Modelo YOLO não carregado. Análise não pode ser realizada.")
+            img_pil = Image.open(image_path_to_analyze)
+            error_img_path = os.path.join(output_dir_for_analyzed_image, os.path.basename(image_path_to_analyze).replace(".png", "_error.png"))
+            img_pil.save(error_img_path)
+            return error_img_path, {'total': 0, 'viable': 0, 'inviable': 0}
+
+        try:
+            img_to_predict = Image.open(image_path_to_analyze)
+            width, height = img_to_predict.size
+
+            results = self.yolo_model.predict(source=image_path_to_analyze, 
+                                            imgsz=960, 
+                                            conf=0.25,
+                                            save=False, 
+                                            verbose=False) 
+
+            counts = {'total': 0, 'viable': 0, 'inviable': 0}
+            
+            if results and results[0].masks is not None: 
+                annotated_frame_np = results[0].plot() 
+                annotated_frame_pil = Image.fromarray(cv2.cvtColor(annotated_frame_np, cv2.COLOR_BGR2RGB))
+
+                base_name = os.path.splitext(os.path.basename(image_path_to_analyze))[0]
+                analyzed_img_name = f"{base_name}_analisada.png"
+                analyzed_img_path = os.path.join(output_dir_for_analyzed_image, analyzed_img_name)
+                annotated_frame_pil.save(analyzed_img_path)
+
+                detected_classes = results[0].boxes.cls.cpu().numpy() 
+                class_names_from_model = results[0].names 
+
+                for cls_idx in detected_classes:
+                    class_name = class_names_from_model[int(cls_idx)]
+                    if class_name == 'viavel':
+                        counts['viable'] += 1
+                    elif class_name == 'inviavel':
+                        counts['inviable'] += 1
+                counts['total'] = counts['viable'] + counts['inviable']
+                
+                return analyzed_img_path, counts
+            else:
+                print(f"Nenhuma detecção para {image_path_to_analyze}")
+                img_pil = Image.open(image_path_to_analyze)
+                no_detection_img_path = os.path.join(output_dir_for_analyzed_image, os.path.basename(image_path_to_analyze).replace(".png", "_no_detection.png"))
+                img_pil.save(no_detection_img_path)
+                return no_detection_img_path, counts 
+
+        except Exception as e:
+            print(f"Erro durante a análise YOLO da imagem {image_path_to_analyze}: {e}")
+            traceback.print_exc()
+            img_pil = Image.open(image_path_to_analyze)
+            error_during_pred_path = os.path.join(output_dir_for_analyzed_image, os.path.basename(image_path_to_analyze).replace(".png", "_pred_error.png"))
+            img_pil.save(error_during_pred_path)
+            return error_during_pred_path, {'total': 0, 'viable': 0, 'inviable': 0}
+
     def analyze_images(self):
         valid_image_data_for_analysis = {}
         original_paths_for_analysis = [] 
@@ -866,51 +989,75 @@ class SeedAnalyzerApp(QMainWindow):
             QMessageBox.warning(self, "Aviso", "Nenhuma imagem válida com ROI definida para análise.")
             return
 
-        self.statusBar().showMessage("Preparando análise...")
+        if not self.yolo_model: 
+            QMessageBox.critical(self, "Erro de Modelo", "O modelo YOLO não está carregado. A análise não pode prosseguir.")
+            return
+
+        self.statusBar().showMessage("Preparando análise e recortes...")
         QApplication.processEvents()
 
-        base = os.path.dirname(original_paths_for_analysis[0]) 
-        out_dir = os.path.join(base, 'imagens_recortadas')
-        os.makedirs(out_dir, exist_ok=True)
+        base_output_parent_dir = os.path.dirname(original_paths_for_analysis[0]) 
+        
+        recortes_orig_dir = os.path.join(base_output_parent_dir, 'imagens_recortadas_originais')
+        os.makedirs(recortes_orig_dir, exist_ok=True)
+        
+        yolo_analyzed_output_dir = os.path.join(base_output_parent_dir, 'imagens_recortadas_analisadas')
+        os.makedirs(yolo_analyzed_output_dir, exist_ok=True)
+
         self.analysis_items = []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        total_tiles_to_process = len(valid_image_data_for_analysis) * (TILE_COLS * TILE_ROWS)
+        processed_tiles_count = 0
 
         for path, data in valid_image_data_for_analysis.items():
-            base_file = os.path.basename(path)
+            base_file_name_orig = os.path.basename(path)
+            
+            pil_original_image = data['pil'] 
             ox, oy, ow, oh = map(int, data['roi'])
             tile_w = ow // TILE_COLS
             tile_h = oh // TILE_ROWS
+
             for idx in range(TILE_COLS * TILE_ROWS):
+                processed_tiles_count += 1
+                self.statusBar().showMessage(f"Processando recorte {processed_tiles_count}/{total_tiles_to_process} de {base_file_name_orig}...")
+                QApplication.processEvents()
+
                 row = idx // TILE_COLS
                 col = idx % TILE_COLS
                 left = ox + col * tile_w
                 top = oy + row * tile_h
 
-                self.statusBar().showMessage(f"Recortando imagem {base_file}: seção {idx+1}/{TILE_COLS*TILE_ROWS}...")
-                QApplication.processEvents()
+                try:
+                    crop = pil_original_image.crop((left, top, left+tile_w, top+tile_h))
+                    base_name_no_ext = os.path.splitext(base_file_name_orig)[0]
+                    rec_name = f"{base_name_no_ext}_{idx+1}.png"
+                    
+                    rec_path = os.path.join(recortes_orig_dir, rec_name) 
+                    crop.save(rec_path)
 
-                crop = data['pil'].crop((left, top, left+tile_w, top+tile_h))
-                base_name_no_ext = os.path.splitext(os.path.basename(path))[0]
-                rec_name = f"{base_name_no_ext}_{idx+1}.png"
-                rec_path = os.path.join(out_dir, rec_name)
-                crop.save(rec_path)
+                    analyzed_yolo_img_path, counts = self.perform_yolo_analysis(rec_path, yolo_analyzed_output_dir)
+                    
+                    self.analysis_items.append({
+                        'recorte': rec_path,                 
+                        'analysed': analyzed_yolo_img_path,  
+                        'counts': counts,
+                        'status': None
+                    })
+                except Exception as e:
+                    print(f"Erro ao processar tile {idx+1} da imagem {base_file_name_orig}: {e}")
+                    traceback.print_exc()
+                    error_placeholder_name = f"{os.path.splitext(base_file_name_orig)[0]}_{idx+1}_PROCESSING_ERROR.png"
+                    self.analysis_items.append({
+                        'recorte': error_placeholder_name, 
+                        'analysed': error_placeholder_name, 
+                        'counts': {'total': 0, 'viable': 0, 'inviable': 0},
+                        'status': 'Erro no Processamento'
+                    })
 
-                self.statusBar().showMessage(f"Analisando imagem {base_file}: seção {idx+1}/{TILE_COLS*TILE_ROWS}...")
-                QApplication.processEvents()
 
-                ana_name = f"{base_name_no_ext}_{idx+1}_analisada.png"
-                ana_path = os.path.join(out_dir, ana_name)
-                crop.save(ana_path) 
-                total = random.randint(5, 15)
-                viable = random.randint(0, total)
-                invi = total - viable
-                self.analysis_items.append({
-                    'recorte': rec_path,
-                    'analysed': ana_path,
-                    'counts': {'total': total, 'viable': viable, 'inviable': invi},
-                    'status': None
-                })
-
-        self.statusBar().showMessage("Pronto.")
+        QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage("Análise YOLO concluída. Preparando visualização...")
         QApplication.processEvents()
 
         self.analysis_stage = True
@@ -928,21 +1075,43 @@ class SeedAnalyzerApp(QMainWindow):
             btn.setVisible(True)
 
         self.list_widget.clear()
-        for item in self.analysis_items:
-            self.list_widget.addItem(os.path.basename(item['recorte']))
+        for item_data in self.analysis_items:
+            list_text = os.path.basename(item_data['recorte'])
+            if item_data['status'] == 'Erro no Processamento':
+                list_text += " [ERRO]" 
+            
+            list_item_widget = QListWidgetItem(list_text)
+            if item_data['status'] == 'Erro no Processamento':
+                list_item_widget.setForeground(QColor('magenta')) 
+            self.list_widget.addItem(list_item_widget)
         
-        try: self.list_widget.currentItemChanged.disconnect()
-        except TypeError: pass
+        try: 
+            self.list_widget.currentItemChanged.disconnect()
+        except TypeError: 
+            pass 
         self.list_widget.currentItemChanged.connect(self.display_selected_item)
         
         if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(0)
+            first_valid_analysis_idx = -1
+            for i in range(self.list_widget.count()):
+                if self.analysis_items[i]['status'] != 'Erro no Processamento':
+                    first_valid_analysis_idx = i
+                    break
+            
+            if first_valid_analysis_idx != -1:
+                self.list_widget.setCurrentRow(first_valid_analysis_idx)
+            elif self.list_widget.count() > 0 : 
+                self.list_widget.setCurrentRow(0)
+            else: 
+                self.scene_orig.clear(); self.scene_analyzed.clear()
+                self.update_details_text() 
         else: 
             self.scene_orig.clear(); self.scene_analyzed.clear()
             self.update_details_text() 
 
         self.update_analysis_action_buttons_state()
         self.activateWindow(); self.list_widget.setFocus()
+        self.statusBar().showMessage("Pronto para revisão da análise.")
 
     def confirm_current_analysis(self):
         idx = self.list_widget.currentRow()
@@ -1110,23 +1279,68 @@ class SeedAnalyzerApp(QMainWindow):
     def show_help(self):
         help_text = """
         <h3>Ajuda - Analisador de Sementes de Orquídea</h3>
+        
         <p><b>Como utilizar o programa:</b></p>
         <ol>
-        <li><b>Carregamento de imagens:</b> Clique em "Selecionar Arquivos" ou "Selecionar Pasta". Imagens muito pequenas ou corrompidas serão marcadas.</li>
-        <li><b>Navegação:</b> Use as teclas de seta (Cima/Baixo) ou o scroll do mouse sobre a área da imagem para navegar entre os itens da lista.</li>
-        <li><b>Delimitar imagem:</b> Posicione o retângulo vermelho sobre a área desejada e clique em "Delimitar [D]" (ou use Enter/Ctrl+D). Repita para todas as imagens válidas. O programa tentará selecionar a próxima imagem não delimitada.</li>
-        <li><b>Analisar imagens:</b> Após delimitar todas as imagens válidas, clique em "Analisar Imagens". As imagens serão recortadas em seções.</li>
-        <li><b>Confirmar/Remover análises:</b> Selecione uma seção e clique em "Confirmar [C]" ou "Remover [R]" (ou use Ctrl+C/Ctrl+R) para marcar/alterar seu status. O programa tentará selecionar a próxima seção não processada.
-        Use "Confirmar Todas", "Remover Todas", "Confirmar Restantes" ou "Remover Restantes" para ações em lote.</li>
-        <li><b>Gerar relatório:</b> Após processar todas as seções, preencha os campos obrigatórios (Análise, Espécie, etc.) e clique em "Confirmar e Gerar Relatório".</li>
+        <li><b>Carregamento de Imagens Originais (para delimitação):</b>
+            <ul>
+                <li>Clique em "Selecionar Arquivos" ou "Selecionar Pasta".</li>
+                <li>Imagens muito pequenas (menores que {W}x{H} pixels) ou corrompidas serão marcadas e não poderão ser delimitadas.</li>
+            </ul>
+        </li>
+        <li><b>Carregamento de Imagens Já Processadas (recortadas):</b>
+            <ul>
+                <li>Clique em "Selecionar Arquivos Processados" ou "Selecionar Pasta Processada".</li>
+                <li>As imagens devem ter dimensões de {PW}x{PH} pixels. Imagens com dimensões incorretas serão marcadas com erro e não serão analisadas.</li>
+                <li>Este modo pula a etapa de delimitação e vai direto para a análise.</li>
+            </ul>
+        </li>
+        <li><b>Navegação:</b> Use as teclas de seta (Cima/Baixo) ou o scroll do mouse sobre a área da imagem para navegar entre os itens da lista em ambas as fases.</li>
+        <li><b>Fase de Delimitação (apenas para imagens originais):</b>
+            <ul>
+                <li>Posicione o retângulo vermelho sobre a área desejada na imagem grande.</li>
+                <li>Clique em "Delimitar [D]" (ou use Enter/Ctrl+D).</li>
+                <li>Repita para todas as imagens válidas. O programa tentará selecionar a próxima imagem não delimitada na sequência.</li>
+                <li>Após todas as imagens válidas serem delimitadas, o botão "Analisar Imagens" ficará disponível.</li>
+            </ul>
+        </li>
+        <li><b>Fase de Análise (automática após delimitação ou ao carregar imagens processadas):</b>
+            <ul>
+                <li>Se partiu de imagens originais, elas serão recortadas em seções ({TC} colunas x {TR} linhas).</li>
+                <li>Cada seção (ou cada imagem processada carregada) passará pela análise do modelo YOLOv8.</li>
+                <li>O modelo identificará sementes viáveis e inviáveis, e uma imagem com as detecções será gerada.</li>
+                <li>Você verá o recorte original (ou a imagem processada) e a imagem analisada pela YOLO lado a lado.</li>
+            </ul>
+        </li>
+        <li><b>Revisão da Análise:</b>
+            <ul>
+                <li>Selecione uma seção analisada na lista.</li>
+                <li>Clique em "Confirmar [C]" (ou Ctrl+C) ou "Remover [R]" (ou Ctrl+R) para marcar/alterar seu status. O programa tentará selecionar a próxima seção não processada.</li>
+                <li>Use "Confirmar Todas", "Remover Todas", "Confirmar Restantes" ou "Remover Restantes" para ações em lote.</li>
+            </ul>
+        </li>
+        <li><b>Gerar Relatório:</b>
+            <ul>
+                <li>Preencha os campos obrigatórios no topo da janela: "Análise", "Espécie", "Temp. Armazenamento (°C)", "Tempo (h)".</li>
+                <li>Após todas as seções analisadas terem sido Confirmadas ou Removidas, clique em "Confirmar e Gerar Relatório".</li>
+                <li>O relatório CSV será salvo no diretório das imagens originais ou no diretório das imagens processadas carregadas.</li>
+            </ul>
+        </li>
         </ol>
-        <p><b>Zoom:</b> Na fase de delimitação, use Ctrl + Scroll do mouse sobre a imagem grande para aplicar zoom.</p>
-        <p><b>Campos obrigatórios para o relatório:</b> Análise, Espécie, Temp. Armazenamento (°C), Tempo (h).</p>
+        
         <p><b>Atalhos de teclado:</b> Enter/Ctrl+D (Delimitar), Ctrl+C (Confirmar), Ctrl+R (Remover).</p>
-        """
-        msg = QMessageBox(self); msg.setWindowTitle("Ajuda")
-        msg.setTextFormat(Qt.TextFormat.RichText); msg.setText(help_text)
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok); msg.exec()
+        """.format(
+            W=TARGET_RECT_WIDTH_ORIGINAL, H=TARGET_RECT_HEIGHT_ORIGINAL,
+            PW=EXPECTED_PROCESSED_WIDTH, PH=EXPECTED_PROCESSED_HEIGHT,
+            TC=TILE_COLS, TR=TILE_ROWS
+        )
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Ajuda")
+        msg.setTextFormat(Qt.TextFormat.RichText) # Permite HTML básico
+        msg.setText(help_text)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
