@@ -251,7 +251,7 @@ class PlacementView(QGraphicsView):
 class SeedAnalyzerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Delimitador de Sementes")
+        self.setWindowTitle("Analisador de Sementes")
         self.resize(1200, 700)
         self.image_paths = []
         self.image_data = {}
@@ -306,7 +306,7 @@ class SeedAnalyzerApp(QMainWindow):
             ("Análise:", self.input_analise),
             ("Espécie:", self.input_especie),
             ("Temp. Armazenamento (°C):", self.input_temp),
-            ("Tempo (h):", self.input_tempo)
+            ("Tempo Armaz. (h):", self.input_tempo)
         ]
 
         for label, widget in labels_fields:
@@ -1337,7 +1337,7 @@ class SeedAnalyzerApp(QMainWindow):
         
         msg = QMessageBox(self)
         msg.setWindowTitle("Ajuda")
-        msg.setTextFormat(Qt.TextFormat.RichText) # Permite HTML básico
+        msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(help_text)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
